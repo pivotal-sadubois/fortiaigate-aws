@@ -1,13 +1,13 @@
 #!/bin/bash
 #===============================================================================
-# SCRIPT NAME:    deploy-echoserver-ingress-traefik.sh
-# DESCRIPTION:    Deploy the echoserver app in namespace echoserver
+# SCRIPT NAME:    deleteFortiAIgate.sh
+# DESCRIPTION:    Delete FortiAIgate Deployment
 # AUTHOR:         Sacha Dubois, Fortinet
-# CREATED:        2025-03-30
-# VERSION:        1.1
+# CREATED:        2026-03-11
+# VERSION:        0.1
 #===============================================================================
 # CHANGE LOG:
-# 2025-03-15 sdubois Initial version
+# 2026-03-11 sdubois Initial version
 #===============================================================================
 
 [ -f ./functions ] && . ./functions
@@ -18,7 +18,7 @@ else
   exit
 fi
 
-echo "deleteFortiAIgate.sh - Demo Self Testing Suite"
+echo "deleteFortiAIgate.sh - Deploy FortiAIgate"
 echo "by Sacha Dubois, Fortinet"
 echo "------------------------------------------------------------------------------------------"
 
@@ -26,7 +26,7 @@ verifyCLIutils
 verifyAWScredentials
 
 messageTitle "Cleaning-up AWS EKS Kubernetes Cluster Deployment ($EKG_CLUSTER_NAME)"
-nodegroup=$(aws eks list-nodegroups  --cluster-name $EKG_CLUSTER_NAME --region $AWS_REGION  --no-cli-pager | jq -r '.nodegroups[]')
+nodegroup=$(aws eks list-nodegroups  --cluster-name $EKG_CLUSTER_NAME --region $AWS_REGION  --no-cli-pager 2>/dev/null | jq -r '.nodegroups[]')
 if [ "$nodegroup" == "gpu-ondemand-ng" -o "$nodegroup" == "gpu-spot-ng"  ]; then 
   echo " ▪ deleting EKS NodeGroup ($nodegroup)"
 
@@ -63,7 +63,7 @@ else
   echo " ▪ EKS NodeGroup already deleted"
 fi
 
-cluster=$(aws eks list-clusters --region $AWS_REGION | jq --arg key "$EKG_CLUSTER_NAME" -r '.clusters[] | select(. == $key)')
+cluster=$(aws eks list-clusters --region $AWS_REGION 2>/dev/null | jq --arg key "$EKG_CLUSTER_NAME" -r '.clusters[] | select(. == $key)')
 if [ "$cluster" == "$EKG_CLUSTER_NAME" ]; then
   echo " ▪ deleting EKS Cluster ($EKG_CLUSTER_NAME)"
 
@@ -86,7 +86,7 @@ else
 fi
 
 # Cleanup Deployment Files
-rm -f $HOME/.fortiaigate.cfg
+#rm -f $HOME/.fortiaigate.cfg
 
 exit
 stacks=$(aws cloudformation list-stacks --region "$AWS_REGION" \

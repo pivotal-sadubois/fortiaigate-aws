@@ -1,13 +1,13 @@
 #!/bin/bash
 #===============================================================================
-# SCRIPT NAME:    deploy-echoserver-ingress-traefik.sh
-# DESCRIPTION:    Deploy the echoserver app in namespace echoserver
+# SCRIPT NAME:    deployFortiAIgate.sh
+# DESCRIPTION:    Deploy FortiAIgate Deployment
 # AUTHOR:         Sacha Dubois, Fortinet
-# CREATED:        2025-03-30
-# VERSION:        1.1
+# CREATED:        2026-03-11
+# VERSION:        0.1
 #===============================================================================
 # CHANGE LOG:
-# 2025-03-15 sdubois Initial version
+# 2026-03-11 sdubois Initial version
 #===============================================================================
 
 export AWS_REGION="eu-north-1"
@@ -24,14 +24,13 @@ if [ -z "$AWS_ACCESS_KEY_ID" -o -z "$AWS_SECRET_ACCESS_KEY" -o -z "$AWS_SESSION_
   exit 1
 fi
 
-echo "deployFortiAIgate.sh - Demo Self Testing Suite"
+echo "deployFortiAIgate.sh - Deploy FortiAIgate"
 echo "by Sacha Dubois, Fortinet"
 echo "------------------------------------------------------------------------------------------"
 
 verifyCLIutils
 verifyAWScredentials
 
-exit
 # 8–10 Very likely to succeed
 # 5–7 Might work
 # 1–4 High chance of failure
@@ -83,18 +82,9 @@ else
   echo " ▪ EKS NodeGroup for cluster '$EKG_CLUSTER_NAME' already installed"
 fi
 
-echo "aws eks list-nodegroups   --cluster-name ekg-genai-fortiaigate   --region eu-west-2   --no-cli-pager"
-  
+messageTitle "Update Kubeconfig for the EKS Cluster"
+aws eks update-kubeconfig --name $EKG_CLUSTER_NAME --region $AWS_REGION
+
 
 exit
-
-
-echo "eksctl create nodegroup --config-file files/gpu-spot-ng.yaml"
-eksctl create nodegroup --config-file files/gpu-spot-ng.yaml 
-
-# Show Stacks
-aws cloudformation list-stacks \
-  --region $AWS_REGION \
-  --stack-status-filter CREATE_IN_PROGRESS CREATE_FAILED CREATE_COMPLETE ROLLBACK_IN_PROGRESS ROLLBACK_FAILED ROLLBACK_COMPLETE DELETE_IN_PROGRESS DELETE_FAILED UPDATE_IN_PROGRESS UPDATE_COMPLETE_CLEANUP_IN_PROGRESS UPDATE_COMPLETE UPDATE_FAILED UPDATE_ROLLBACK_IN_PROGRESS UPDATE_ROLLBACK_FAILED UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS UPDATE_ROLLBACK_COMPLETE REVIEW_IN_PROGRESS IMPORT_IN_PROGRESS IMPORT_COMPLETE IMPORT_ROLLBACK_IN_PROGRESS IMPORT_ROLLBACK_FAILED IMPORT_ROLLBACK_COMPLETE
-
 
