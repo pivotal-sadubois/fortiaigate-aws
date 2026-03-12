@@ -9,7 +9,6 @@
 # CHANGE LOG:
 # 2026-03-11 sdubois Initial version
 #===============================================================================
-
 [ -f ./functions ] && . ./functions
 if [ -f $HOME/.fortiaigate.cfg ]; then
    . $HOME/.fortiaigate.cfg 
@@ -26,6 +25,27 @@ verifyCLIutils
 verifyAWScredentials
 
 messageTitle "Cleaning-up AWS EKS Kubernetes Cluster Deployment ($EKG_CLUSTER_NAME)"
+
+LB_ARN=$(aws elbv2 describe-load-balancers --region $AWS_REGION | jq -r '.LoadBalancers[].LoadBalancerArn')
+if [ "$LB_ARN" != "" ]; then
+  echo " ▪ deleting ALB Load Balancer ($LB_ARN)"
+  aws elbv2 delete-load-balancer --load-balancer-arn "$LB_ARN" --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: failed to delete load-balancer"
+    echo "       => aws elbv2 delete-load-balancer --load-balancer-arn "$LB_ARN" --region $AWS_REGION"
+    exit
+  fi
+
+  while aws elbv2 describe-load-balancers \
+    --load-balancer-arns "$LB_ARN" \
+    --region eu-north-1 >/dev/null 2>&1; do
+    sleep 10
+  done
+else
+  echo " ▪ ALB Load Balancer allredy deleted"
+fi
+
 nodegroup=$(aws eks list-nodegroups  --cluster-name $EKG_CLUSTER_NAME --region $AWS_REGION  --no-cli-pager 2>/dev/null | jq -r '.nodegroups[]')
 if [ "$nodegroup" == "gpu-ondemand-ng" -o "$nodegroup" == "gpu-spot-ng"  ]; then 
   echo " ▪ deleting EKS NodeGroup ($nodegroup)"
@@ -78,9 +98,11 @@ if [ "$cluster" == "$EKG_CLUSTER_NAME" ]; then
   while aws eks describe-cluster --name "$EKG_CLUSTER_NAME" \
     --region "$AWS_REGION" \
     --query 'cluster.status' \
-    --output text 2>/dev/null 2>&1; do
+    --output text >/dev/null 2>&1; do
     sleep 20
   done
+
+  echo " ▪ EKS Cluster ($EKG_CLUSTER_NAME) sucessfuly deleted"
 else
   echo " ▪ EKS Cluster ($EKG_CLUSTER_NAME) already deleted"
 fi

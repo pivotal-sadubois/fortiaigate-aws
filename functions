@@ -1,0 +1,839 @@
+#!/bin/bash
+#--pod-running-timeout=1m0s
+# ############################################################################################
+# File: ........: functions 
+# Language .....: bash 
+# Author .......: Sacha Dubois, VMware
+# Description ..: Tanzu Demo Hub - Cluster Installation
+# ############################################################################################
+ROOT_SHELL=0
+[ ! -n "$COLUMNS" ] && export COLUMNS=178
+[ -f /usr/local/bin/bat ] && alias cat='/usr/local/bin/bat -p'
+[ -f /usr/bin/batcat ] && alias cat='/usr/bin/batcat -p'
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: logMessages
+# Function Purpose ...: Verify Installed CLI Utilities for Mac
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: none
+# Dependancies: ......: messageLine()
+# ------------------------------------------------------------------------------------------
+# Return Value .......: none
+# ------------------------------------------------------------------------------------------
+logMessages() { 
+  LOGFILE=$1
+  messageLine 1>&2
+  cat $LOGFILE 1>&2
+  messageLine 1>&2
+} 
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: messageLine
+# Function Purpose ...: Print a Line on the Screen
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: none
+# Dependancies: ......: Environment Variable. COLUMNS # Wide of the Terminal
+# ------------------------------------------------------------------------------------------
+# Return Value .......: none
+# ------------------------------------------------------------------------------------------
+messageLine() {
+  #echo "------------------------------------------------------------------------------------------------------------------------------------------------------------------"
+  str="";n=0; while [ $n -lt $COLUMNS ]; do str="${str}-"; let n=n+1; done
+ echo "$str"
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: verifyCLIutils
+# Function Purpose ...: Verify Installed CLI Utilities for Mac
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: none
+# Dependancies: ......: 
+#                     : 
+# ------------------------------------------------------------------------------------------
+# Return Value .......: none
+# ------------------------------------------------------------------------------------------
+verifyCLIutils() {
+  messageTitle "Verify Installed CLI Utilities"
+  aws --version > /dev/null 2>&1; awscli=$?
+  if [ $awscli -eq 0 ]; then
+    echo " ▪ AWS CLI ............: $(aws --version | head -1)"
+  else
+    echo "ERROR: EKS CLI not installed"
+    echo "       => brew install awscli"
+  fi
+
+  eksctl version > /dev/null 2>&1; ekscli=$?
+  if [ $ekscli -eq 0 ]; then
+    echo " ▪ EKS CLI ............: $(eksctl version | head -1)"
+  else
+    echo "ERROR: EKS CLI not installed"
+    echo "       => brew tap weaveworks/tap"
+    echo "       => brew install weaveworks/tap/eksctl"
+    exit
+  fi
+
+  jq --version > /dev/null 2>&1; jqcli=$?
+  if [ $ekscli -eq 0 ]; then
+    echo " ▪ JQ .................: $(jq --version | head -1)"
+  else
+    echo "ERROR: JQ Utility not installed"
+    echo "       => brew install jq"
+    exit
+  fi
+
+  kubectl version --client >/dev/null 2>&1; ret=$?
+  if [ $ret -eq 0 ]; then
+    echo " ▪ Kubectl ............: $(kubectl version --client | head -1)"
+  else
+    echo "ERROR: kubectl Utility not installed"
+    echo "       => brew install kubectl"
+    exit
+  fi
+
+}
+
+messageTitle() {
+  _msg="$*"
+  _dat=$(date "+%Y%m%d-%H:%M:%S")
+  
+  [ $(uname) == "Linux" ] && HST="jump-host" || HST="localhost"
+
+  if [ "${PCF_DEPLOYMENT_DEBUG}" == "true" -o "${DEBUG}" == "1" ]; then
+    if [ "$HST" == "localhost" ]; then
+      #printf "\e[37m[${_dat}-$HST] ${_msg}\e[0m\n" 
+      printf "\e[1m[${_dat}-$HST] ${_msg}\e[0m\n"
+    else
+      echo -e "[${_dat}-$HST] ${_msg}"
+    fi
+  else
+    #printf "\e[37m[${_msg}\e[0m\n"
+    printf "\e[1m${_msg}\e[0m\n"
+    #echo -e "\e[1mBold${_msg}"
+  fi
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: verifyAWScredentials
+# Function Purpose ...: Verify Installed CLI Utilities for Mac
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: none
+# Dependancies: ......:
+#                     :
+# ------------------------------------------------------------------------------------------
+# Return Value .......: none
+# ------------------------------------------------------------------------------------------
+verifyAWScredentials() {
+  aws sts get-caller-identity > /dev/null 2>&1; ret=$?
+  if [ $ret -ne 0 ]; then
+    echo "ERROR: Invalid Credentials or credentials have expired"
+    echo "       AWS_ACCESS_KEY_ID:     $AWS_ACCESS_KEY_ID"
+    echo "       AWS_SECRET_ACCESS_KEY: $AWS_SECRET_ACCESS_KEY"
+    echo "       AWS_SESSION_TOKEN:     $AWS_SESSION_TOKEN"
+    echo ""
+    echo "Renew the Credentials at the following webpage"
+    echo "  => https://aws-sso.corp.fortinet.com/"
+    exit else AWS_USERID=$(aws sts get-caller-identity | jq -r '.UserId') AWS_ACCOUNT=$(aws sts get-caller-identity | jq -r '.Account')
+    AWS_ARN=$(aws sts get-caller-identity | jq -r '.Arn')
+  
+    messageTitle "AWS Credentials Access verified"
+    echo " ▪ AWS User ID ........: $AWS_USERID"
+    echo " ▪ AWS Account ........: $AWS_ACCOUNT"
+    echo " ▪ AWS ARN ............: $AWS_ARN"
+    echo " ▪ AWS REGION .........: $AWS_REGION"
+  fi
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: verifySpotPlacementScrores
+# Function Purpose ...: Verify Spot Placement Scores
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: AWS_REGION
+# Dependancies: ......: 
+#                     :
+# ------------------------------------------------------------------------------------------
+# Return Value .......: Placement Score (1, 2 or 3)
+# ------------------------------------------------------------------------------------------
+verifySpotPlacementScrores() {
+  REGION="$1"
+
+  aws ec2 get-spot-placement-scores \
+      --target-capacity 1 \
+      --single-availability-zone \
+      --instance-types g5.2xlarge g5.4xlarge --no-cli-pager > /tmp/tempfile.json
+
+  if [ "$REGION" == "" ]; then 
+    cat /tmp/tempfile.json
+  else
+    avz=$(jq -r --arg key "$REGION" '[.SpotPlacementScores[] | select(.Region == $key) | .AvailabilityZoneId] | join(" ")' /tmp/tempfile.json)
+
+    score=0
+    for n in $avz; do
+      scr=$(jq -r --arg reg "$REGION" --arg avz "$n" '.SpotPlacementScores[] | select(.Region == $reg and .AvailabilityZoneId == $avz).Score' /tmp/tempfile.json)
+      let score=score+scr
+    done
+
+    echo "$score"
+  fi
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: installEKSCluster
+# Function Purpose ...: Install the EKS Cluster without NodeGroups
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......:
+# Dependancies: ......: AWS_REGION, EKG_CLUSTER_NAME
+# ------------------------------------------------------------------------------------------
+# Return Value .......:
+# ------------------------------------------------------------------------------------------
+installEKSCluster() {
+  messageTitle "AWS EKS Kubernetes Cluster Deployment"
+
+  cluster=$(aws eks list-clusters --region $AWS_REGION | jq --arg key "$EKG_CLUSTER_NAME" -r '.clusters[] | select(. == $key)')
+  if [ "$cluster" != "$EKG_CLUSTER_NAME" ]; then
+    eksctl create cluster --name "$EKG_CLUSTER_NAME" --region $AWS_REGION --without-nodegroup > /tmp/error.log 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Cluster creatation failed"
+      exit
+    fi
+
+    echo " ▪ Update Kubeconfig for the EKS Cluster"
+    aws eks update-kubeconfig --name $EKG_CLUSTER_NAME --region $AWS_REGION > /dev/null 2>&1
+
+    echo " ▪  Write EKS configuration to state file (\$HOME/.fortiaigate.cfg)"
+    echo "export EKG_CLUSTER_NAME=$EKG_CLUSTER_NAME"       >  $HOME/.fortiaigate.cfg
+    echo "export AWS_REGION=$AWS_REGION"                   >> $HOME/.fortiaigate.cfg
+  else
+    stt=$(aws eks describe-cluster --name $EKG_CLUSTER_NAME --region $AWS_REGION --query "cluster.status" --output text --no-cli-pager)
+    if [ "$stt" == "ACTIVE" ]; then
+      echo " ▪ EKS Cluster '$EKG_CLUSTER_NAME' already installed with status ($stt)"
+    else
+      echo "ERROR: Cluster is currently in ($stt) state. Please fix or remove the cluster to proceede"
+      exit
+    fi
+  fi
+
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: installNodeGroup
+# Function Purpose ...: Install the EKS NoadeGroup gpu-ondemand-ng or gpu-spot-ng
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......:
+# Dependancies: ......: AWS_REGION, EKG_CLUSTER_NAME
+# ------------------------------------------------------------------------------------------
+# Return Value .......: 0 - Success, 1 - failed
+# ------------------------------------------------------------------------------------------
+installNodeGroup() {
+  # 8–10 Very likely to succeed
+  # 5–7 Might work
+  # 1–4 High chance of failure
+  spotscore=$(verifySpotPlacementScrores $AWS_REGION)
+
+  if [ $spotscore -le 3 ]; then
+    export EKG_NODEGROUP_TYPE=gpu-ondemand-ng
+    echo " ▪ To few gpu-spot-ng availability zones in Region: $AWS_REGION, deployeing gpu-ondemand-ng instead"
+  else
+    export EKG_NODEGROUP_TYPE=gpu-spot-ng
+    echo " ▪ Trying to go with gpu-ondemand-ng NodeGroups"
+  fi
+
+  echo " ▪  Write EKS configuration to state file (\$HOME/.fortiaigate.cfg)"
+  echo "export EKG_NODEGROUP_TYPE=$EKG_NODEGROUP_TYPE"   >> $HOME/.fortiaigate.cfg
+
+  nodegroups=$(aws eks list-nodegroups  --cluster-name $EKG_CLUSTER_NAME --region $AWS_REGION  --no-cli-pager | jq -r '.nodegroups[]')
+  if [ "$nodegroups" == "" ]; then
+    echo " ▪ Creating EKS NodeGroup type $EKG_NODEGROUP_TYPE"
+    sed -e "s/CLUSTER/$EKG_CLUSTER_NAME/g" -e "s/REGION/$AWS_REGION/g"  files/${EKG_NODEGROUP_TYPE}-template.yaml > /tmp/${EKG_NODEGROUP_TYPE}.yaml
+    eksctl create nodegroup --config-file /tmp/${EKG_NODEGROUP_TYPE}.yaml > /tmp/error.log 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: NodeGroup creatation failed"
+      exit 1
+    fi
+  else
+    echo " ▪ EKS NodeGroup for cluster '$EKG_CLUSTER_NAME' already installed"
+  fi
+
+  messageTitle " ▪ Update Kubeconfig for the EKS Cluster"
+  aws eks update-kubeconfig --name $EKG_CLUSTER_NAME --region $AWS_REGION > /dev/null 2>&1
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: installALBloadBalancer
+# Function Purpose ...: Install the ALB Load Balancer
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......:
+# Dependancies: ......: AWS_REGION, EKG_CLUSTER_NAME
+# ------------------------------------------------------------------------------------------
+# Return Value .......: 0 - Success, 1 - failed
+# ------------------------------------------------------------------------------------------
+installALBloadBalancer() {
+
+  SA_NAMESPACE="kube-system"
+  POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
+  ROLE_NAME="AmazonEKSLoadBalancerControllerRole"
+
+  messageTitle "ALB Load Balancer for EKS Kubernetes Cluster"
+
+  # Get AWS Account ID from current login/session
+  AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/tmp/error.log); ret=$?
+  if [ $ret -ne 0 -o -z "$AWS_ACCOUNT_ID" ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to get AWS Account ID from current login"
+    echo "       => aws sts get-caller-identity --query Account --output text"
+    exit 1
+  fi
+
+  kubectl -n "$SA_NAMESPACE" get deployment aws-load-balancer-controller >/dev/null 2>&1; ret=$?
+  if [ $ret -ne 0 ]; then
+    echo " ▪ install the ALB Load Balancer"
+    echo " ▪ AWS Account ID .......: $AWS_ACCOUNT_ID"
+
+    # Ensure the IAM OIDC provider exists
+    eksctl utils associate-iam-oidc-provider \
+      --cluster "$EKG_CLUSTER_NAME" \
+      --region "$AWS_REGION" \
+      --approve > /tmp/error.log 2>&1; ret=$?
+
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: ALB Load Balancer creation failed"
+      echo "       => eksctl utils associate-iam-oidc-provider --cluster $EKG_CLUSTER_NAME --region $AWS_REGION --approve"
+      exit 1
+    fi
+
+    # Ensure the IAM policy exists
+    aws iam get-policy \
+      --policy-arn "arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME" >/dev/null 2>&1; ret=$?
+
+    if [ $ret -ne 0 ]; then
+      echo " ▪ create IAM policy $POLICY_NAME"
+
+      curl -fsSL -o /tmp/iam_policy.json \
+        https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json \
+        > /tmp/error.log 2>&1; ret=$?
+
+      if [ $ret -ne 0 ]; then
+        logMessages /tmp/error.log
+        echo "ERROR: Downloading IAM policy failed"
+        echo "       => curl -fsSL -o /tmp/iam_policy.json https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json"
+        exit 1
+      fi
+
+      aws iam create-policy \
+        --policy-name "$POLICY_NAME" \
+        --policy-document file:///tmp/iam_policy.json > /tmp/error.log 2>&1; ret=$?
+
+      if [ $ret -ne 0 ]; then
+        logMessages /tmp/error.log
+        echo "ERROR: Install IAM Policy failed"
+        echo "       => aws iam create-policy --policy-name $POLICY_NAME --policy-document file:///tmp/iam_policy.json"
+        exit 1
+      fi
+    else
+      echo " ▪ IAM policy already exists"
+    fi
+
+    # Create or update the IAM service account
+    echo " ▪ create IAM service account aws-load-balancer-controller"
+    eksctl create iamserviceaccount \
+      --cluster "$EKG_CLUSTER_NAME" \
+      --region "$AWS_REGION" \
+      --namespace "$SA_NAMESPACE" \
+      --name aws-load-balancer-controller \
+      --role-name "$ROLE_NAME" \
+      --attach-policy-arn "arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME" \
+      --override-existing-serviceaccounts \
+      --approve > /tmp/error.log 2>&1; ret=$?
+
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Creating Service Account failed"
+      echo "       => eksctl create iamserviceaccount \\"
+      echo "            --cluster $EKG_CLUSTER_NAME \\"
+      echo "            --region $AWS_REGION \\"
+      echo "            --namespace $SA_NAMESPACE \\"
+      echo "            --name aws-load-balancer-controller \\"
+      echo "            --role-name $ROLE_NAME \\"
+      echo "            --attach-policy-arn arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME \\"
+      echo "            --override-existing-serviceaccounts \\"
+      echo "            --approve"
+      exit 1
+    fi
+
+    echo " ▪ Add Helm Repo https://aws.github.io/eks-charts"
+    helm repo add eks https://aws.github.io/eks-charts >/dev/null 2>&1 || true
+
+    helm repo update > /tmp/error.log 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Helm repo update failed"
+      echo "       => helm repo update"
+      exit 1
+    fi
+
+    VPC_ID=$(aws eks describe-cluster \
+      --name "$EKG_CLUSTER_NAME" \
+      --region "$AWS_REGION" \
+      --query 'cluster.resourcesVpcConfig.vpcId' \
+      --output text 2>/tmp/error.log); ret=$?
+
+    if [ $ret -ne 0 -o -z "$VPC_ID" ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to get VPC ID for cluster $EKG_CLUSTER_NAME"
+      echo "       => aws eks describe-cluster --name $EKG_CLUSTER_NAME --region $AWS_REGION --query 'cluster.resourcesVpcConfig.vpcId' --output text"
+      exit 1
+    fi
+
+    echo " ▪ Installing/upgrading AWS Load Balancer Controller..."
+    helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+      -n "$SA_NAMESPACE" \
+      --set clusterName="$EKG_CLUSTER_NAME" \
+      --set serviceAccount.create=false \
+      --set serviceAccount.name=aws-load-balancer-controller \
+      --set region="$AWS_REGION" \
+      --set vpcId="$VPC_ID" > /tmp/error.log 2>&1; ret=$?
+
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Helm installation of AWS Load Balancer Controller failed"
+      echo "       => helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller -n $SA_NAMESPACE ..."
+      exit 1
+    fi
+
+    echo " ▪ Waiting for deployment to become ready..."
+    kubectl -n "$SA_NAMESPACE" rollout status deployment/aws-load-balancer-controller --timeout=5m > /tmp/error.log 2>&1; ret=$?
+
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: AWS Load Balancer Controller deployment did not become ready"
+      echo "       => kubectl -n $SA_NAMESPACE rollout status deployment/aws-load-balancer-controller --timeout=5m"
+      exit 1
+    fi
+
+    echo " ▪ Update the ALB DNS record with ALB ARN"
+    preserveAWScontext
+    switchToDNSaccount
+
+    aws route53 change-resource-record-sets \
+      --hosted-zone-id "$HOSTED_ZONE_ID" \
+      --change-batch "{
+        \"Changes\": [{
+          \"Action\": \"UPSERT\",
+          \"ResourceRecordSet\": {
+            \"Name\": \"$APP_FQDN\",
+            \"Type\": \"CNAME\",
+            \"TTL\": 300,
+            \"ResourceRecords\": [{
+              \"Value\": \"$ALB_HOSTNAME\"
+            }]
+          }
+        }]
+      }" > /tmp/error.log 2>&1; ret=$?
+
+    restoreAWScontext
+
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Creating Route53 CNAME failed"
+      echo "       => aws route53 change-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID ..."
+      exit 1
+    fi
+
+    echo " ▪ AWS Load Balancer Controller installed successfully."
+    #kubectl -n "$SA_NAMESPACE" get deployment aws-load-balancer-controller
+    #kubectl -n "$SA_NAMESPACE" get pods -l app.kubernetes.io/name=aws-load-balancer-controller
+
+  else
+    echo " ▪ ALB Load Balancer already installed"
+    #kubectl -n "$SA_NAMESPACE" get deployment aws-load-balancer-controller
+  fi
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: installIngressCertificate
+# Function Purpose ...: Install the Ingress Certificate for the ALB Load Balancer
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: <route53-hosted-zone-id>
+# Dependancies: ......: AWS_REGION, EKG_CLUSTER_NAME
+# ------------------------------------------------------------------------------------------
+# Return Value .......: Sets CERT_ARN
+# ------------------------------------------------------------------------------------------
+installIngressCertificate() {
+
+  HOSTED_ZONE_ID="$1"
+  ALB_REGION="$AWS_REGION"
+  CERT_DOMAIN="*.fortiaigate.fortidemo.ch"
+  CERT_SAN="fortiaigate.fortidemo.ch"
+
+  messageTitle "Ingress Certificate for ALB Load Balancer"
+
+  if [ -z "$HOSTED_ZONE_ID" ]; then
+    echo "ERROR: Missing Route53 Hosted Zone ID"
+    echo "       => installIngressCertificate <route53-hosted-zone-id>"
+    return 1
+  fi
+
+  # Preserve current AWS credentials/session
+  PRESERVED_AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-}"
+  PRESERVED_AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-}"
+  PRESERVED_AWS_SESSION_TOKEN="${AWS_SESSION_TOKEN:-}"
+  PRESERVED_AWS_REGION="${AWS_REGION:-}"
+
+  # ----------------------------------------------------------------------------------------
+  # Check if we already have a valid ISSUED certificate
+  # ----------------------------------------------------------------------------------------
+  CERT_ARN=$(aws acm list-certificates \
+    --region "$ALB_REGION" \
+    --certificate-statuses ISSUED \
+    --output json 2>/tmp/error.log | jq -r --arg domain "$CERT_DOMAIN" '
+      .CertificateSummaryList
+      | map(select(.DomainName == $domain))
+      | .[0].CertificateArn // empty
+    '); ret=$?
+
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to check existing ACM certificates"
+    echo "       => aws acm list-certificates --region $ALB_REGION --certificate-statuses ISSUED"
+    return 1
+  fi
+
+  if [ -n "$CERT_ARN" ]; then
+    echo " ▪ Reusing existing ACM certificate"
+    echo " ▪ CERT_ARN ............: $CERT_ARN"
+
+    CERT_SAN_FOUND=$(aws acm describe-certificate \
+      --certificate-arn "$CERT_ARN" \
+      --region "$ALB_REGION" \
+      --query 'Certificate.SubjectAlternativeNames' \
+      --output json 2>/tmp/error.log | jq -r --arg san "$CERT_SAN" '
+        if index($san) then "yes" else "no" end
+      '); ret=$?
+
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to validate existing ACM certificate"
+      echo "       => aws acm describe-certificate --certificate-arn $CERT_ARN --region $ALB_REGION"
+      return 1
+    fi
+
+    if [ "$CERT_SAN_FOUND" != "yes" ]; then
+      echo " ▪ Existing certificate does not contain SAN $CERT_SAN"
+      echo " ▪ Requesting new ACM certificate"
+      CERT_ARN=""
+    fi
+  fi
+
+  # ----------------------------------------------------------------------------------------
+  # Request new certificate if none exists
+  # ----------------------------------------------------------------------------------------
+  if [ -z "$CERT_ARN" ]; then
+    echo " ▪ Request new ACM certificate"
+
+    CERT_ARN=$(aws acm request-certificate \
+      --domain-name "$CERT_DOMAIN" \
+      --subject-alternative-names "$CERT_SAN" \
+      --validation-method DNS \
+      --region "$ALB_REGION" \
+      --query 'CertificateArn' \
+      --output text > /tmp/error.log 2>&1); ret=$?
+
+    if [ $ret -ne 0 -o -z "$CERT_ARN" ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Requesting ACM certificate failed"
+      echo "       => aws acm request-certificate --domain-name $CERT_DOMAIN --subject-alternative-names $CERT_SAN --validation-method DNS --region $ALB_REGION"
+      return 1
+    fi
+
+    echo " ▪ CERT_ARN ............: $CERT_ARN"
+
+    # ACM may need a moment before the validation record is readable
+    sleep 5
+
+    read -r VALIDATION_NAME VALIDATION_VALUE <<< "$(aws acm describe-certificate \
+      --certificate-arn "$CERT_ARN" \
+      --region "$ALB_REGION" \
+      --query 'Certificate.DomainValidationOptions[].ResourceRecord' \
+      --output json 2>/tmp/error.log | jq -r '
+        map(select(.Name != null and .Value != null))
+        | unique_by(.Name,.Value)
+        | .[0]
+        | "\(.Name) \(.Value)"
+      ')"; ret=$?
+
+    if [ $ret -ne 0 -o -z "${VALIDATION_NAME:-}" -o -z "${VALIDATION_VALUE:-}" ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Reading ACM validation CNAME failed"
+      echo "       => aws acm describe-certificate --certificate-arn $CERT_ARN --region $ALB_REGION"
+      return 1
+    fi
+
+    echo " ▪ VALIDATION_NAME .....: $VALIDATION_NAME"
+    echo " ▪ VALIDATION_VALUE ....: $VALIDATION_VALUE"
+
+    # --------------------------------------------------------------------------------------
+    # Switch to Route53 account and create validation CNAME
+    # --------------------------------------------------------------------------------------
+    unset AWS_SESSION_TOKEN
+
+    [ -f ~/.fortidemo.cfg ] && . ~/.fortidemo.cfg
+
+    export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION
+    [ -n "${AWS_SESSION_TOKEN:-}" ] && export AWS_SESSION_TOKEN
+
+    echo " ▪ Create/Update Route53 validation CNAME"
+    aws route53 change-resource-record-sets \
+      --hosted-zone-id "$HOSTED_ZONE_ID" \
+      --change-batch "{
+        \"Changes\": [{
+          \"Action\": \"UPSERT\",
+          \"ResourceRecordSet\": {
+            \"Name\": \"$VALIDATION_NAME\",
+            \"Type\": \"CNAME\",
+            \"TTL\": 300,
+            \"ResourceRecords\": [{
+              \"Value\": \"$VALIDATION_VALUE\"
+            }]
+          }
+        }]
+      }" > /tmp/error.log 2>&1; ret=$?
+
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Creating Route53 validation CNAME failed"
+      echo "       => aws route53 change-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID ..."
+      return 1
+    fi
+
+    # --------------------------------------------------------------------------------------
+    # Restore original AWS credentials/session
+    # --------------------------------------------------------------------------------------
+    export AWS_ACCESS_KEY_ID="$PRESERVED_AWS_ACCESS_KEY_ID"
+    export AWS_SECRET_ACCESS_KEY="$PRESERVED_AWS_SECRET_ACCESS_KEY"
+
+    if [ -n "${PRESERVED_AWS_SESSION_TOKEN}" ]; then
+      export AWS_SESSION_TOKEN="$PRESERVED_AWS_SESSION_TOKEN"
+    else
+      unset AWS_SESSION_TOKEN
+    fi
+
+    if [ -n "${PRESERVED_AWS_REGION}" ]; then
+      export AWS_REGION="$PRESERVED_AWS_REGION"
+    else
+      unset AWS_REGION
+    fi
+
+    # --------------------------------------------------------------------------------------
+    # Wait until certificate becomes ISSUED
+    # --------------------------------------------------------------------------------------
+    echo " ▪ Waiting for certificate to become ISSUED..."
+    while true; do
+      CERT_STATUS=$(aws acm describe-certificate \
+        --certificate-arn "$CERT_ARN" \
+        --region "$ALB_REGION" \
+        --query 'Certificate.Status' \
+        --output text 2>/tmp/error.log); ret=$?
+
+      if [ $ret -ne 0 ]; then
+        logMessages /tmp/error.log
+        echo "ERROR: Failed to read ACM certificate status"
+        echo "       => aws acm describe-certificate --certificate-arn $CERT_ARN --region $ALB_REGION --query 'Certificate.Status' --output text"
+        return 1
+      fi
+
+      echo " ▪ Certificate Status ..: $CERT_STATUS"
+
+      [ "$CERT_STATUS" = "ISSUED" ] && break
+
+      if [ "$CERT_STATUS" = "FAILED" ]; then
+        echo "ERROR: ACM certificate request failed"
+        return 1
+      fi
+
+      sleep 10
+    done
+
+    echo " ▪ Ingress certificate installed successfully"
+
+  else
+    echo " ▪ Valid ACM certificate already exists"
+    echo " ▪ CERT_ARN ............: $CERT_ARN"
+  fi
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: getCertARN
+# Function Purpose ...: Return ARN of an existing ACM certificate
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: domain
+# Dependancies: ......: AWS_REGION
+# ------------------------------------------------------------------------------------------
+# Return Value .......: prints CERT_ARN to stdout
+# ------------------------------------------------------------------------------------------
+getCertARN() {
+  DOMAIN="$1"
+
+  if [ -z "$DOMAIN" ]; then
+    echo "ERROR: getCertARN requires a domain" >&2
+    exit 1
+  fi
+
+  aws acm list-certificates \
+    --region "$AWS_REGION" \
+    --certificate-statuses ISSUED \
+    --output json 2>/dev/null \
+  | jq -r --arg domain "$DOMAIN" '
+      .CertificateSummaryList
+      | map(select(.DomainName == $domain))
+      | .[0].CertificateArn // empty
+    '
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: deployDemoApp
+# Function Purpose ...: Deploy a Demo App to test Ingress
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......:
+# Dependancies: ......: AWS_REGION, EKG_CLUSTER_NAME
+# ------------------------------------------------------------------------------------------
+# Return Value .......:
+# ------------------------------------------------------------------------------------------
+deployDemoApp() {
+
+  APP_NAMESPACE="demo-app"
+  APP_DEPLOYMENT="demo-app"
+  APP_INGRESS="demo-app-ingress"
+  APP_URL="demo.fortiaigate.fortidemo.ch"
+
+  messageTitle "Deploy Demo App for Ingress Test"
+
+  CERT_ARN=$(getCertARN "*.fortiaigate.fortidemo.ch")
+  ret=$?
+  if [ $ret -ne 0 -o -z "$CERT_ARN" ]; then
+    echo "ERROR: Failed to get Certificate ARN"
+    echo "       => getCertARN \"*.fortiaigate.fortidemo.ch\""
+    return 1
+  fi
+
+  echo " ▪ CERT_ARN ............: $CERT_ARN"
+
+  cp files/demo-app.yaml /tmp/demo-app.yaml
+  sed "s|XXX_ARN_XXX|$CERT_ARN|g" files/demo-app-ingress-template.yaml > /tmp/demo-app-ingress.yaml
+
+  # Create Namespace if missing
+  kubectl get namespace "$APP_NAMESPACE" >/dev/null 2>&1; ret=$?
+  if [ $ret -ne 0 ]; then
+    echo " ▪ Create Namespace ....: $APP_NAMESPACE"
+    kubectl create namespace "$APP_NAMESPACE" > /tmp/error.log 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Creating namespace failed"
+      echo "       => kubectl create namespace $APP_NAMESPACE"
+      return 1
+    fi
+  else
+    echo " ▪ Namespace already exists"
+  fi
+
+  # Deploy Demo App only if not already installed
+  kubectl -n "$APP_NAMESPACE" get deployment "$APP_DEPLOYMENT" >/dev/null 2>&1; ret=$?
+  if [ $ret -ne 0 ]; then
+    echo " ▪ Install Demo App ....: $APP_DEPLOYMENT"
+    kubectl apply -n $APP_NAMESPACE  -f /tmp/demo-app.yaml > /tmp/error.log 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Installing demo app failed"
+      echo "       => kubectl apply -f /tmp/demo-app.yaml"
+      return 1
+    fi
+  else
+    echo " ▪ Demo App already installed"
+  fi
+
+  # Deploy Ingress only if not already installed
+  kubectl -n "$APP_NAMESPACE" get ingress "$APP_INGRESS" >/dev/null 2>&1; ret=$?
+  if [ $ret -ne 0 ]; then
+    echo " ▪ Install Ingress .....: $APP_INGRESS"
+    kubectl -n $APP_NAMESPACE apply -f /tmp/demo-app-ingress.yaml > /tmp/error.log 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Installing demo app ingress failed"
+      echo "       => kubectl -n $APP_NAMESPACE apply -f /tmp/demo-app-ingress.yaml"
+      return 1
+    fi
+  else
+    echo " ▪ Demo App Ingress already installed"
+  fi
+
+  echo " ▪ Waiting for Deployment to become ready..."
+  kubectl -n "$APP_NAMESPACE" rollout status deployment/"$APP_DEPLOYMENT" --timeout=5m > /tmp/error.log 2>&1; ret=$?
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Demo App deployment did not become ready"
+    echo "       => kubectl -n $APP_NAMESPACE rollout status deployment/$APP_DEPLOYMENT --timeout=5m"
+    return 1
+  fi
+
+  echo " ▪ Waiting for Ingress Address..."
+  n=0
+  while [ $n -lt 30 ]; do
+    INGRESS_ADDR=$(kubectl -n "$APP_NAMESPACE" get ingress "$APP_INGRESS" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+    [ -n "$INGRESS_ADDR" ] && break
+    sleep 10
+    let n=n+1
+  done
+
+  echo " ▪ Ingress Address .....: $INGRESS_ADDR"
+
+  echo " ▪ HTTP Test ...........: http://$APP_URL"
+  curl -I --max-time 10 "http://$APP_URL"
+
+  echo " ▪ HTTPS Test ..........: https://$APP_URL"
+  curl -I --max-time 10 "https://$APP_URL"
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: preserveAWScontext
+# Function Purpose ...: Preserve current AWS credentials/session
+# ------------------------------------------------------------------------------------------
+preserveAWScontext() {
+  PRESERVED_AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-}"
+  PRESERVED_AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-}"
+  PRESERVED_AWS_SESSION_TOKEN="${AWS_SESSION_TOKEN:-}"
+  PRESERVED_AWS_REGION="${AWS_REGION:-}"
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: restoreAWScontext
+# Function Purpose ...: Restore current AWS credentials/session
+# ------------------------------------------------------------------------------------------
+restoreAWScontext() {
+  export AWS_ACCESS_KEY_ID="$PRESERVED_AWS_ACCESS_KEY_ID"
+  export AWS_SECRET_ACCESS_KEY="$PRESERVED_AWS_SECRET_ACCESS_KEY"
+
+  if [ -n "${PRESERVED_AWS_SESSION_TOKEN:-}" ]; then
+    export AWS_SESSION_TOKEN="$PRESERVED_AWS_SESSION_TOKEN"
+  else
+    unset AWS_SESSION_TOKEN
+  fi
+
+  if [ -n "${PRESERVED_AWS_REGION:-}" ]; then
+    export AWS_REGION="$PRESERVED_AWS_REGION"
+  else
+    unset AWS_REGION
+  fi
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: switchToDNSaccount
+# Function Purpose ...: Load Route53 account credentials
+# ------------------------------------------------------------------------------------------
+switchToDNSaccount() {
+  [ -f ~/.fortidemo.cfg ] && . ~/.fortidemo.cfg
+
+  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION
+  [ -n "${AWS_SESSION_TOKEN:-}" ] && export AWS_SESSION_TOKEN
+}
+
