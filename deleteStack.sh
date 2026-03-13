@@ -288,6 +288,9 @@ deleteVpcDependencies() {
   deleteFlowLogsInVpc "$vpcId"
   deleteVpcEndpointsInVpc "$vpcId"
   deleteNatGatewaysInVpc "$vpcId"
+
+  deleteEfsFileSystemsInVpc "$vpcId"
+
   deleteAvailableNetworkInterfacesInVpc "$vpcId"
   deleteSubnetsInVpc "$vpcId"
   deleteNonMainRouteTablesInVpc "$vpcId"
@@ -399,10 +402,102 @@ deleteAllStacks() {
     [ "$stt" == "DELETE_COMPLETE" -o "$stt" == "DELETE_IN_PROGRESS" ] && continue
 
     echo "STACK: $stack STT:$stt"
-    messageTitle "Cleaning up Stack: $stuck ($stt)"
+    messageTitle "Cleaning up Stack: $stack ($stt)"
 
     disableTerminationProtectionIfNeeded "$stack"
     deleteStackAndRepairIfNeeded "$stack"
+  done
+}
+
+deleteEfsAccessPointsInFileSystem() {
+  fsId="$1"
+
+  aws efs describe-access-points \
+    --region $AWS_REGION \
+    --file-system-id "$fsId" \
+    > /tmp/efs-ap.json 2>/dev/null
+
+  for ap in $(jq -r '.AccessPoints[]? | .AccessPointId' /tmp/efs-ap.json); do
+    echo "Delete EFS Access Point: $ap"
+    aws efs delete-access-point \
+      --access-point-id "$ap" \
+      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+    [ $ret -ne 0 ] && logMessages /tmp/error.log
+  done
+
+  while true; do
+    aws efs describe-access-points \
+      --region $AWS_REGION \
+      --file-system-id "$fsId" \
+      > /tmp/efs-ap.json 2>/dev/null
+
+    apLeft=$(jq -r '[.AccessPoints[]?] | length' /tmp/efs-ap.json)
+    [ "$apLeft" == "0" ] && break
+
+    echo "Waiting for EFS Access Points to disappear for filesystem $fsId ..."
+    sleep 10
+  done
+}
+
+deleteEfsMountTargetsInVpc() {
+  fsId="$1"
+  vpcId="$2"
+
+  aws efs describe-mount-targets \
+    --file-system-id "$fsId" \
+    --region $AWS_REGION \
+    > /tmp/efs-mt.json 2>/dev/null
+
+  for mt in $(jq -r --arg vpc "$vpcId" '.MountTargets[]? | select(.VpcId == $vpc) | .MountTargetId' /tmp/efs-mt.json); do
+    echo "Delete EFS Mount Target: $mt"
+    aws efs delete-mount-target \
+      --mount-target-id "$mt" \
+      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+    [ $ret -ne 0 ] && logMessages /tmp/error.log
+  done
+
+  while true; do
+    aws efs describe-mount-targets \
+      --file-system-id "$fsId" \
+      --region $AWS_REGION \
+      > /tmp/efs-mt.json 2>/dev/null
+
+    mtLeft=$(jq -r --arg vpc "$vpcId" '[.MountTargets[]? | select(.VpcId == $vpc)] | length' /tmp/efs-mt.json)
+    [ "$mtLeft" == "0" ] && break
+
+    echo "Waiting for EFS Mount Targets to disappear for filesystem $fsId ..."
+    sleep 10
+  done
+}
+
+deleteEfsFileSystemsInVpc() {
+  vpcId="$1"
+
+  aws efs describe-file-systems \
+    --region $AWS_REGION \
+    > /tmp/efs-fs.json 2>/dev/null
+
+  for fsId in $(jq -r '.FileSystems[]? | .FileSystemId' /tmp/efs-fs.json); do
+
+    aws efs describe-mount-targets \
+      --file-system-id "$fsId" \
+      --region $AWS_REGION \
+      > /tmp/efs-mt.json 2>/dev/null
+
+    fsInVpc=$(jq -r --arg vpc "$vpcId" '[.MountTargets[]? | select(.VpcId == $vpc)] | length' /tmp/efs-mt.json)
+
+    [ "$fsInVpc" == "0" ] && continue
+
+    echo "Delete EFS dependencies for filesystem: $fsId"
+
+    deleteEfsAccessPointsInFileSystem "$fsId"
+    deleteEfsMountTargetsInVpc "$fsId" "$vpcId"
+
+    echo "Delete EFS File System: $fsId"
+    aws efs delete-file-system \
+      --file-system-id "$fsId" \
+      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+    [ $ret -ne 0 ] && logMessages /tmp/error.log
   done
 }
 

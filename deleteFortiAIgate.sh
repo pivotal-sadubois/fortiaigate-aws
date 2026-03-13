@@ -24,7 +24,7 @@ echo "--------------------------------------------------------------------------
 verifyCLIutils
 verifyAWScredentials
 
-messageTitle "Cleaning-up AWS EKS Kubernetes Cluster Deployment ($EKG_CLUSTER_NAME)"
+messageTitle "Cleaning-up AWS EKS Kubernetes Cluster Deployment ($EKS_CLUSTER_NAME)"
 
 LB_ARN=$(aws elbv2 describe-load-balancers --region $AWS_REGION | jq -r '.LoadBalancers[].LoadBalancerArn')
 if [ "$LB_ARN" != "" ]; then
@@ -46,12 +46,12 @@ else
   echo " ▪ ALB Load Balancer allredy deleted"
 fi
 
-nodegroup=$(aws eks list-nodegroups  --cluster-name $EKG_CLUSTER_NAME --region $AWS_REGION  --no-cli-pager 2>/dev/null | jq -r '.nodegroups[]')
+nodegroup=$(aws eks list-nodegroups  --cluster-name $EKS_CLUSTER_NAME --region $AWS_REGION  --no-cli-pager 2>/dev/null | jq -r '.nodegroups[]')
 if [ "$nodegroup" == "gpu-ondemand-ng" -o "$nodegroup" == "gpu-spot-ng"  ]; then 
   echo " ▪ deleting EKS NodeGroup ($nodegroup)"
 
   eksctl delete nodegroup \
-    --cluster $EKG_CLUSTER_NAME \
+    --cluster $EKS_CLUSTER_NAME \
     --name $nodegroup \
     --disable-eviction \
     --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
@@ -63,11 +63,11 @@ if [ "$nodegroup" == "gpu-ondemand-ng" -o "$nodegroup" == "gpu-spot-ng"  ]; then
     exit
   fi
 
-  NODEGROUP="$EKG_NODEGROUP_TYPE"
+  NODEGROUP="$EKS_CLUSTER_NAME"
 
   while true; do
     status=$(aws eks describe-nodegroup \
-      --cluster-name "$EKG_CLUSTER_NAME" \
+      --cluster-name "$EKS_CLUSTER_NAME" \
       --nodegroup-name "$NODEGROUP" \
       --region "$AWS_REGION" \
       --query 'nodegroup.status' \
@@ -83,28 +83,28 @@ else
   echo " ▪ EKS NodeGroup already deleted"
 fi
 
-cluster=$(aws eks list-clusters --region $AWS_REGION 2>/dev/null | jq --arg key "$EKG_CLUSTER_NAME" -r '.clusters[] | select(. == $key)')
-if [ "$cluster" == "$EKG_CLUSTER_NAME" ]; then
-  echo " ▪ deleting EKS Cluster ($EKG_CLUSTER_NAME)"
+cluster=$(aws eks list-clusters --region $AWS_REGION 2>/dev/null | jq --arg key "$EKS_CLUSTER_NAME" -r '.clusters[] | select(. == $key)')
+if [ "$cluster" == "$EKS_CLUSTER_NAME" ]; then
+  echo " ▪ deleting EKS Cluster ($EKS_CLUSTER_NAME)"
 
-  eksctl delete cluster --name "$EKG_CLUSTER_NAME" --region "$AWS_REGIO" > /tmp/error.log 2>&1; ret=$?
+  eksctl delete cluster --name "$EKS_CLUSTER_NAME" --region "$AWS_REGIO" > /tmp/error.log 2>&1; ret=$?
   if [ $ret -ne 0 ]; then
     logMessages /tmp/error.log
     echo "ERROR: failed to delete the EKS Cluster"
-    echo "       =>  eksctl delete cluster --name $EKG_CLUSTER_NAME --region $AWS_REGIO"
+    echo "       =>  eksctl delete cluster --name $EKS_CLUSTER_NAME --region $AWS_REGIO"
     exit
   fi
 
-  while aws eks describe-cluster --name "$EKG_CLUSTER_NAME" \
+  while aws eks describe-cluster --name "$EKS_CLUSTER_NAME" \
     --region "$AWS_REGION" \
     --query 'cluster.status' \
     --output text >/dev/null 2>&1; do
     sleep 20
   done
 
-  echo " ▪ EKS Cluster ($EKG_CLUSTER_NAME) sucessfuly deleted"
+  echo " ▪ EKS Cluster ($EKS_CLUSTER_NAME) sucessfuly deleted"
 else
-  echo " ▪ EKS Cluster ($EKG_CLUSTER_NAME) already deleted"
+  echo " ▪ EKS Cluster ($EKS_CLUSTER_NAME) already deleted"
 fi
 
 # Cleanup Deployment Files
