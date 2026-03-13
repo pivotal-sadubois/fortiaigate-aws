@@ -1405,16 +1405,29 @@ installEFSstorageClass() {
   echo " ▪ EFS_SECURITY_GROUP_ID: $EFS_SECURITY_GROUP_ID"
 
   # ----------------------------------------------------------------------------------------
-  # Create mount targets in cluster subnets
+  # Create mount targets in cluster Availability Zones
+  # Only one mount target per Availability Zone is allowed
   # ----------------------------------------------------------------------------------------
   for subnet in $SUBNET_IDS; do
+
+    subnetAzId=$(aws ec2 describe-subnets \
+      --subnet-ids "$subnet" \
+      --region "$AWS_REGION" \
+      --query 'Subnets[0].AvailabilityZoneId' \
+      --output text 2>/tmp/error.log); ret=$?
+
+    if [ $ret -ne 0 -o -z "$subnetAzId" ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to get Availability Zone ID for subnet $subnet"
+      exit 1
+    fi
 
     MT_ID=$(aws efs describe-mount-targets \
       --file-system-id "$EFS_FILE_SYSTEM_ID" \
       --region "$AWS_REGION" \
-      --output json 2>/tmp/error.log | jq -r --arg subnet "$subnet" '
+      --output json 2>/tmp/error.log | jq -r --arg azid "$subnetAzId" '
         .MountTargets[]
-        | select(.SubnetId == $subnet)
+        | select(.AvailabilityZoneId == $azid)
         | .MountTargetId
       ' | head -1); ret=$?
 
@@ -1425,7 +1438,7 @@ installEFSstorageClass() {
     fi
 
     if [ -z "$MT_ID" ]; then
-      echo " ▪ Create mount target ..: $subnet"
+      echo " ▪ Create mount target ..: $subnet ($subnetAzId)"
 
       aws efs create-mount-target \
         --file-system-id "$EFS_FILE_SYSTEM_ID" \
@@ -1439,7 +1452,7 @@ installEFSstorageClass() {
         exit 1
       fi
     else
-      echo " ▪ Mount target exists ..: $subnet"
+      echo " ▪ Mount target exists ..: $subnet ($subnetAzId)"
     fi
   done
 
