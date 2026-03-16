@@ -504,6 +504,8 @@ deleteEfsFileSystemsInVpc() {
 deleteAllStacks
 
 echo "Manually see all stacks and their status"
-echo "=> aws cloudformation list-stacks --region $AWS_REGION"
+echo "=> aws cloudformation list-stacks --region $AWS_REGION | jq -r '.StackSummaries[] | select(.StackStatus == \"DELETE_FAILED\")'"
+
+# aws cloudformation list-stacks --region $AWS_REGION | jq -r '.StackSummaries[] | select(.StackStatus == "DELETE_FAILED")'
 
 exit 0

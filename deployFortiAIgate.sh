@@ -14,11 +14,12 @@
 
 echo ""
 echo "deployFortiAIgate.sh - Deploy FortiAIgate"
-echo "by Sacha Dubois, Fortinet"
+echo "by Adrian Sameli / Sacha Dubois, Fortinet"
 echo "------------------------------------------------------------------------------------------"
 
 checkLocalConfig
-verifyCLIutils
+verifyOrLoginSSO
+verifyCLIutils deploy
 verifyAWScredentials
 verifyAWSRoute53credentials
 

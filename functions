@@ -7,6 +7,7 @@
 # Description ..: Tanzu Demo Hub - Cluster Installation
 # ############################################################################################
 ROOT_SHELL=0
+DEBUG=0
 [ ! -n "$COLUMNS" ] && export COLUMNS=178
 [ -f /usr/local/bin/bat ] && alias cat='/usr/local/bin/bat -p'
 [ -f /usr/bin/batcat ] && alias cat='/usr/bin/batcat -p'
@@ -25,11 +26,9 @@ checkLocalConfig() {
     . $HOME/.fortiaigate.cfg
 
   # Make sure AWS Access credentials are set
-  if [ -z "$AWS_ACCESS_KEY_ID" -o -z "$AWS_SECRET_ACCESS_KEY" -o -z "$AWS_SESSION_TOKEN" ]; then
+  if [ -z "$AWS_PROFILE" ]; then
     echo "ERROR: AWS Access Credentials are not set in (\$HOME/.fortiaigate.cfg), please set them as follows: "
-    echo '       export AWS_ACCESS_KEY_ID="XXXXXXXXXXXXXXXXXXXX"'
-    echo '       export AWS_SECRET_ACCESS_KEY="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"'
-    echo '       export AWS_SESSION_TOKEN="XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX..."'
+    echo '       export AWS_PROFILE="profile-name"'
     exit 1
   fi
 
@@ -60,9 +59,7 @@ checkLocalConfig() {
     echo "export EKS_CLUSTER_NAME=\"\""              >> $HOME/.fortiaigate.cfg
     echo ""                                          >> $HOME/.fortiaigate.cfg
     echo "# AWS Access Credentials"                  >> $HOME/.fortiaigate.cfg
-    echo "AWS_ACCESS_KEY_ID=\"\""                    >> $HOME/.fortiaigate.cfg
-    echo "AWS_SECRET_ACCESS_KEY=\"\""                >> $HOME/.fortiaigate.cfg
-    echo "AWS_SESSION_TOKEN=\"\""                    >> $HOME/.fortiaigate.cfg
+    echo "AWS_PROFILE=\"\""                          >> $HOME/.fortiaigate.cfg
     echo ""                                          >> $HOME/.fortiaigate.cfg
     echo "# AWS Rout54 Access Credentials"           >> $HOME/.fortiaigate.cfg
     echo "ROUT53_DNS_UPDATES=\"false\""              >> $HOME/.fortiaigate.cfg
@@ -71,6 +68,12 @@ checkLocalConfig() {
     echo "ROUT53_SECRET_ACCESS_KEY=\"\""             >> $HOME/.fortiaigate.cfg
     echo "ROUT53_HOSTED_ZONE_ID=\"\""                >> $HOME/.fortiaigate.cfg
     echo "ROUT53_DOMAIN=\"\""                        >> $HOME/.fortiaigate.cfg
+    echo ""                                          >> $HOME/.fortiaigate.cfg
+    echo "# AWS RCR Repository Configuration"        >> $HOME/.fortiaigate.cfg
+    echo "ECR_FORTIAIGATE_SOURCE_DIR=\"\""           >> $HOME/.fortiaigate.cfg
+    echo "ECR_FORTIAIGATE_TAG=\"\""                  >> $HOME/.fortiaigate.cfg
+    echo "ECR_REGION=\"\""                           >> $HOME/.fortiaigate.cfg
+
   fi
 } 
 
@@ -117,6 +120,8 @@ messageLine() {
 # Return Value .......: none
 # ------------------------------------------------------------------------------------------
 verifyCLIutils() {
+  MODE="$1"
+
   messageTitle "Verify Installed CLI Utilities"
   aws --version > /dev/null 2>&1; awscli=$?
   if [ $awscli -eq 0 ]; then
@@ -145,15 +150,36 @@ verifyCLIutils() {
     exit
   fi
 
-  kubectl version --client >/dev/null 2>&1; ret=$?
-  if [ $ret -eq 0 ]; then
-    echo " ▪ Kubectl ............: $(kubectl version --client | head -1)"
-  else
-    echo "ERROR: kubectl Utility not installed"
-    echo "       => brew install kubectl"
-    exit
+  if [ "$MODE" == "deploy" ]; then 
+    kubectl version --client >/dev/null 2>&1; ret=$?
+    if [ $ret -eq 0 ]; then
+      echo " ▪ Kubectl ............: $(kubectl version --client | head -1)"
+    else
+      echo "ERROR: kubectl Utility not installed"
+      echo "       => brew install kubectl"
+      exit
+    fi
+
+    helm version >/dev/null 2>&1; ret=$?
+      if [ $ret -eq 0 ]; then
+      echo " ▪ Helm ...............: $(helm version | awk -F',' '{ print $1 }' | sed -e 's/"//g' -e 's/version\.//g')"
+    else
+      echo "ERROR: helm Utility not installed"
+      echo "       => brew install helm"
+      exit
+    fi
   fi
 
+  if [ "$MODE" == "registry" ]; then 
+     skopeo --version >/dev/null 2>&1; ret=$?
+      if [ $ret -eq 0 ]; then
+      echo " ▪ skopeo .............: $( skopeo --version)"
+    else
+      echo "ERROR: skopeo Utility not installed"
+      echo "       => brew install skopeo"
+      exit
+    fi
+  fi
 }
 
 messageTitle() {
@@ -162,7 +188,7 @@ messageTitle() {
   
   [ $(uname) == "Linux" ] && HST="jump-host" || HST="localhost"
 
-  if [ "${PCF_DEPLOYMENT_DEBUG}" == "true" -o "${DEBUG}" == "1" ]; then
+  if [ "${DEBUG}" == "1" ]; then
     if [ "$HST" == "localhost" ]; then
       #printf "\e[37m[${_dat}-$HST] ${_msg}\e[0m\n" 
       printf "\e[1m[${_dat}-$HST] ${_msg}\e[0m\n"
@@ -536,12 +562,11 @@ installALBloadBalancer() {
 # ------------------------------------------------------------------------------------------
 updateAppDNS() {
   # Skip this function if ROUT53_DNS_UPDATES is disabled
-  [ "$ROUT53_DNS_UPDATES" == "false" ] && return
+  [ "${ROUT53_DNS_UPDATES:-true}" == "false" ] && return
 
   APP_NAMESPACE="$1"
   APP_FQDN="$2"
   HOSTED_ZONE_ID="$3"
-
   APP_INGRESS="${APP_NAMESPACE}-ingress"
 
   messageTitle "Update Route53 DNS Record for Application"
@@ -566,6 +591,7 @@ updateAppDNS() {
   fi
 
   echo " ▪ APP_FQDN ............: $APP_FQDN"
+  echo " ▪ APP_INGRESS .........: $APP_INGRESS"
   echo " ▪ ALB_HOSTNAME ........: $ALB_HOSTNAME"
 
   # --------------------------------------------------------------------------
@@ -573,6 +599,26 @@ updateAppDNS() {
   # --------------------------------------------------------------------------
   preserveAWScontext
   switchToDNSaccount
+
+  # --------------------------------------------------------------------------
+  # Read current Route53 target before change
+  # --------------------------------------------------------------------------
+  OLD_DNS_TARGET=$(aws route53 list-resource-record-sets \
+    --hosted-zone-id "$HOSTED_ZONE_ID" \
+    --query "ResourceRecordSets[?Name == '${APP_FQDN}.'].ResourceRecords[0].Value" \
+    --output text 2>/tmp/error.log); ret=$?
+
+  if [ $ret -ne 0 ]; then
+    restoreAWScontext
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to read current Route53 DNS record"
+    echo "       => aws route53 list-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID"
+    exit 1
+  fi
+
+  [ "$OLD_DNS_TARGET" = "None" ] && OLD_DNS_TARGET=""
+  echo " ▪ OLD_DNS_TARGET ......: $OLD_DNS_TARGET"
+  echo " ▪ NEW_DNS_TARGET ......: $ALB_HOSTNAME"
 
   # --------------------------------------------------------------------------
   # Create / Update DNS Record
@@ -595,11 +641,11 @@ updateAppDNS() {
     --query 'ChangeInfo.Id' \
     --output text 2>/tmp/error.log); ret=$?
 
-  if [ $ret -ne 0 -o -z "$CHANGE_ID" ]; then
+  if [ $ret -ne 0 -o -z "$CHANGE_ID" -o "$CHANGE_ID" = "None" ]; then
     restoreAWScontext
     logMessages /tmp/error.log
     echo "ERROR: Creating Route53 CNAME failed"
-    echo "       => aws route53 change-resource-record-sets"
+    echo "       => aws route53 change-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID ..."
     exit 1
   fi
 
@@ -610,8 +656,8 @@ updateAppDNS() {
   # --------------------------------------------------------------------------
   echo " ▪ Waiting for Route53 change to become INSYNC..."
 
-  while true; do
-
+  n=0
+  while [ $n -lt 60 ]; do
     STATUS=$(aws route53 get-change \
       --id "$CHANGE_ID" \
       --query 'ChangeInfo.Status' \
@@ -621,15 +667,49 @@ updateAppDNS() {
       restoreAWScontext
       logMessages /tmp/error.log
       echo "ERROR: Failed to get Route53 change status"
+      echo "       => aws route53 get-change --id $CHANGE_ID"
       exit 1
     fi
 
     echo " ▪ Route53 Status ......: $STATUS"
-
     [ "$STATUS" = "INSYNC" ] && break
 
     sleep 5
+    let n=n+1
   done
+
+  if [ "$STATUS" != "INSYNC" ]; then
+    restoreAWScontext
+    echo "ERROR: Route53 change did not become INSYNC"
+    echo "       Change ID .......: $CHANGE_ID"
+    exit 1
+  fi
+
+  # --------------------------------------------------------------------------
+  # Re-read Route53 record and confirm it now matches the ALB hostname
+  # --------------------------------------------------------------------------
+  FINAL_DNS_TARGET=$(aws route53 list-resource-record-sets \
+    --hosted-zone-id "$HOSTED_ZONE_ID" \
+    --query "ResourceRecordSets[?Name == '${APP_FQDN}.'].ResourceRecords[0].Value" \
+    --output text 2>/tmp/error.log); ret=$?
+
+  if [ $ret -ne 0 -o -z "$FINAL_DNS_TARGET" -o "$FINAL_DNS_TARGET" = "None" ]; then
+    restoreAWScontext
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to verify final Route53 DNS record"
+    echo "       => aws route53 list-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID"
+    exit 1
+  fi
+
+  echo " ▪ FINAL_DNS_TARGET ....: $FINAL_DNS_TARGET"
+
+  if [ "$FINAL_DNS_TARGET" != "$ALB_HOSTNAME" ]; then
+    restoreAWScontext
+    echo "ERROR: Route53 record does not match current ALB hostname"
+    echo "       Expected ........: $ALB_HOSTNAME"
+    echo "       Found ...........: $FINAL_DNS_TARGET"
+    exit 1
+  fi
 
   restoreAWScontext
 
@@ -638,29 +718,45 @@ updateAppDNS() {
   # --------------------------------------------------------------------------
   echo " ▪ Waiting for public DNS propagation..."
 
+  RESOLVED_8=""
+  RESOLVED_1=""
+
   n=0
   while [ $n -lt 30 ]; do
+    RESOLVED_8=$(dig +short "$APP_FQDN" @8.8.8.8 | head -1)
+    RESOLVED_1=$(dig +short "$APP_FQDN" @1.1.1.1 | head -1)
 
-    RESOLVED=$(dig +short "$APP_FQDN" @8.8.8.8 | head -1)
+    echo " ▪ Public DNS (8.8.8.8) : $RESOLVED_8"
+    echo " ▪ Public DNS (1.1.1.1) : $RESOLVED_1"
 
-    if [ "$RESOLVED" = "$ALB_HOSTNAME." -o "$RESOLVED" = "$ALB_HOSTNAME" ]; then
-      break
+    if [ "$RESOLVED_8" = "$ALB_HOSTNAME." -o "$RESOLVED_8" = "$ALB_HOSTNAME" ]; then
+      if [ "$RESOLVED_1" = "$ALB_HOSTNAME." -o "$RESOLVED_1" = "$ALB_HOSTNAME" ]; then
+        break
+      fi
     fi
 
     sleep 5
     let n=n+1
   done
 
-  if [ "$RESOLVED" != "$ALB_HOSTNAME." -a "$RESOLVED" != "$ALB_HOSTNAME" ]; then
+  MATCH_8=0
+  MATCH_1=0
+  [ "$RESOLVED_8" = "$ALB_HOSTNAME." -o "$RESOLVED_8" = "$ALB_HOSTNAME" ] && MATCH_8=1
+  [ "$RESOLVED_1" = "$ALB_HOSTNAME." -o "$RESOLVED_1" = "$ALB_HOSTNAME" ] && MATCH_1=1
+
+  if [ $MATCH_8 -ne 1 -o $MATCH_1 -ne 1 ]; then
     echo "ERROR: DNS propagation timeout"
     echo "       FQDN ............: $APP_FQDN"
     echo "       Expected ........: $ALB_HOSTNAME"
-    echo "       Resolved ........: $RESOLVED"
+    echo "       8.8.8.8 .........: $RESOLVED_8"
+    echo "       1.1.1.1 .........: $RESOLVED_1"
     exit 1
   fi
 
   echo " ▪ DNS record successfully propagated"
+  echo " ▪ Application DNS ready: $APP_FQDN -> $ALB_HOSTNAME"
 }
+
 # ------------------------------------------------------------------------------------------
 # Function Name ......: deployApp
 # Function Purpose ...: Deploy an application workload
@@ -1047,9 +1143,7 @@ deployDemoApp() {
 # Function Purpose ...: Preserve current AWS credentials/session
 # ------------------------------------------------------------------------------------------
 preserveAWScontext() {
-  PRESERVED_AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID:-}"
-  PRESERVED_AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY:-}"
-  PRESERVED_AWS_SESSION_TOKEN="${AWS_SESSION_TOKEN:-}"
+  PRESERVED_AWS_PROFILE="${AWS_PROFILE:-}"
   PRESERVED_AWS_REGION="${AWS_REGION:-}"
 }
 
@@ -1058,13 +1152,13 @@ preserveAWScontext() {
 # Function Purpose ...: Restore current AWS credentials/session
 # ------------------------------------------------------------------------------------------
 restoreAWScontext() {
-  export AWS_ACCESS_KEY_ID="$PRESERVED_AWS_ACCESS_KEY_ID"
-  export AWS_SECRET_ACCESS_KEY="$PRESERVED_AWS_SECRET_ACCESS_KEY"
+  unset AWS_SESSION_TOKEN AWS_SECRET_ACCESS_KEY AWS_ACCESS_KEY_ID
 
-  if [ -n "${PRESERVED_AWS_SESSION_TOKEN:-}" ]; then
-    export AWS_SESSION_TOKEN="$PRESERVED_AWS_SESSION_TOKEN"
+  if [ -n "${PRESERVED_AWS_PROFILE:-}" ]; then
+    export AWS_PROFILE="$PRESERVED_AWS_PROFILE"
+    export PROFILE="$PRESERVED_AWS_PROFILE"
   else
-    unset AWS_SESSION_TOKEN
+    unset AWS_PROFILE
   fi
 
   if [ -n "${PRESERVED_AWS_REGION:-}" ]; then
@@ -1711,5 +1805,660 @@ deleteEKScluster() {
     echo " ▪ EKS Cluster ($EKS_CLUSTER_NAME) already deleted"
   fi
 }
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: waitForVpcResourcesToSettle
+# Function Purpose ...: Wait until ALB/NAT related VPC resources have settled
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: none
+# Dependancies: ......: AWS_REGION, EKS_CLUSTER_NAME
+# ------------------------------------------------------------------------------------------
+# Return Value .......: none
+# ------------------------------------------------------------------------------------------
+waitForVpcResourcesToSettle() {
+
+  VPC_ID=$(aws eks describe-cluster \
+    --name "$EKS_CLUSTER_NAME" \
+    --region "$AWS_REGION" \
+    --query 'cluster.resourcesVpcConfig.vpcId' \
+    --output text 2>/dev/null); ret=$?
+
+  if [ $ret -ne 0 -o -z "$VPC_ID" -o "$VPC_ID" = "None" ]; then
+    echo " ▪ VPC already unavailable, skipping settle wait"
+    return
+  fi
+
+  echo " ▪ Waiting for VPC resources to settle ($VPC_ID)"
+
+  n=0
+  while [ $n -lt 40 ]; do
+
+    eniCount=$(aws ec2 describe-network-interfaces \
+      --region "$AWS_REGION" \
+      --filters Name=vpc-id,Values="$VPC_ID" \
+      --query 'length(NetworkInterfaces[])' \
+      --output text 2>/dev/null)
+    [ -z "$eniCount" -o "$eniCount" = "None" ] && eniCount=0
+
+    natCount=$(aws ec2 describe-nat-gateways \
+      --region "$AWS_REGION" \
+      --filter Name=vpc-id,Values="$VPC_ID" \
+      --query 'length(NatGateways[?State!=`deleted`])' \
+      --output text 2>/dev/null)
+    [ -z "$natCount" -o "$natCount" = "None" ] && natCount=0
+
+    lbCount=$(aws elbv2 describe-load-balancers \
+      --region "$AWS_REGION" \
+      --query "length(LoadBalancers[?VpcId=='$VPC_ID'])" \
+      --output text 2>/dev/null)
+    [ -z "$lbCount" -o "$lbCount" = "None" ] && lbCount=0
+
+    echo "   ▪ ENIs:$eniCount NAT:$natCount ELBv2:$lbCount"
+
+    # Only ALB must be gone before cluster deletion
+    [ "$lbCount" = "0" ] && break
+
+    sleep 15
+    let n=n+1
+  done
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: waitForClusterStackDeletion
+# Function Purpose ...: Wait until the cluster CloudFormation stack is deleted or failed
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: none
+# Dependancies: ......: AWS_REGION, EKS_CLUSTER_NAME
+# ------------------------------------------------------------------------------------------
+# Return Value .......: none
+# ------------------------------------------------------------------------------------------
+waitForClusterStackDeletion() {
+
+  CLUSTER_STACK="eksctl-${EKS_CLUSTER_NAME}-cluster"
+
+  echo " ▪ Waiting for CloudFormation cluster stack ($CLUSTER_STACK)"
+
+  while true; do
+    STACK_STATUS=$(aws cloudformation describe-stacks \
+      --stack-name "$CLUSTER_STACK" \
+      --region "$AWS_REGION" \
+      --query 'Stacks[0].StackStatus' \
+      --output text 2>/dev/null)
+    ret=$?
+
+    if [ $ret -ne 0 ]; then
+      echo " ▪ CloudFormation stack already deleted"
+      break
+    fi
+
+    echo " ▪ Stack Status ........: $STACK_STATUS"
+
+    [ "$STACK_STATUS" = "DELETE_COMPLETE" ] && break
+    [ "$STACK_STATUS" = "DELETE_FAILED" ] && break
+
+    sleep 120
+  done
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: repairClusterStackIfNeeded
+# Function Purpose ...: Cleanup VPC dependencies and retry stack delete if stack failed
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: none
+# Dependancies: ......: AWS_REGION, EKS_CLUSTER_NAME, deleteVpcDependencies()
+# ------------------------------------------------------------------------------------------
+# Return Value .......: none
+# ------------------------------------------------------------------------------------------
+repairClusterStackIfNeeded() {
+
+  CLUSTER_STACK="eksctl-${EKS_CLUSTER_NAME}-cluster"
+
+  STACK_STATUS=$(aws cloudformation describe-stacks \
+    --stack-name "$CLUSTER_STACK" \
+    --region "$AWS_REGION" \
+    --query 'Stacks[0].StackStatus' \
+    --output text 2>/dev/null)
+  ret=$?
+
+  [ $ret -ne 0 ] && return
+
+  if [ "$STACK_STATUS" = "DELETE_FAILED" ]; then
+    messageTitle "Repairing failed CloudFormation cluster stack ($CLUSTER_STACK)"
+
+    VPC_ID=$(aws cloudformation list-stack-resources \
+      --stack-name "$CLUSTER_STACK" \
+      --region "$AWS_REGION" \
+      --query "StackResourceSummaries[?ResourceType=='AWS::EC2::VPC'].PhysicalResourceId" \
+      --output text 2>/dev/null)
+
+    if [ -n "$VPC_ID" -a "$VPC_ID" != "None" ]; then
+      echo " ▪ Found cluster VPC ....: $VPC_ID"
+
+      deleteVpcDependencies "$VPC_ID"
+
+      echo " ▪ Retry delete stack ...: $CLUSTER_STACK"
+      aws cloudformation delete-stack \
+        --stack-name "$CLUSTER_STACK" \
+        --region "$AWS_REGION" \
+        --no-cli-pager > /tmp/error.log 2>&1; ret=$?
+
+      if [ $ret -ne 0 ]; then
+        logMessages /tmp/error.log
+        echo "ERROR: Failed to retry CloudFormation stack deletion"
+        echo "       => aws cloudformation delete-stack --stack-name $CLUSTER_STACK --region $AWS_REGION"
+        exit 1
+      fi
+    else
+      echo "ERROR: Stack is DELETE_FAILED but no VPC resource was found"
+      exit 1
+    fi
+  fi
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: verifyOrLoginSSO
+# Function Purpose ...: AWS SSO login
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: none
+# Dependancies: ......: AWS_REGION, AWS_PROFILE
+# ------------------------------------------------------------------------------------------
+# Return Value .......: none
+# ------------------------------------------------------------------------------------------a
+verifyOrLoginSSO() {
+  unset AWS_SESSION_TOKEN AWS_SECRET_ACCESS_KEY AWS_ACCESS_KEY_ID
+  PROFILE="${AWS_PROFILE:-default}"
+
+  aws sts get-caller-identity --profile "$PROFILE" >/dev/null 2>&1
+  ret=$?
+
+  if [ $ret -eq 0 ]; then
+    echo "AWS SSO session already valid (profile: $PROFILE)"
+    return
+  fi
+
+  echo "AWS SSO session expired or missing — logging in..."
+  aws sso login --profile "$PROFILE"
+  ret=$?
+
+  if [ $ret -ne 0 ]; then
+    echo "ERROR: AWS SSO login failed"
+    exit 1
+  fi
+}
+
+deleteClassicLoadBalancersInVpc() {
+  vpcId="$1"
+
+  aws elb describe-load-balancers \
+    --region $AWS_REGION > /tmp/elbs.json 2>/dev/null
+
+  for lb in $(jq -r --arg vpc "$vpcId" '.LoadBalancerDescriptions[]? | select(.VPCId == $vpc) | .LoadBalancerName' /tmp/elbs.json); do
+    echo "Delete Classic Load Balancer: $lb"
+    aws elb delete-load-balancer \
+      --load-balancer-name "$lb" \
+      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+    [ $ret -ne 0 ] && logMessages /tmp/error.log
+  done
+}
+
+deleteElbv2LoadBalancersInVpc() {
+  vpcId="$1"
+
+  aws elbv2 describe-load-balancers \
+    --region $AWS_REGION > /tmp/elbv2.json 2>/dev/null
+
+  for arn in $(jq -r --arg vpc "$vpcId" '.LoadBalancers[]? | select(.VpcId == $vpc) | .LoadBalancerArn' /tmp/elbv2.json); do
+    echo "Delete ELBv2 Load Balancer: $arn"
+    aws elbv2 delete-load-balancer \
+      --load-balancer-arn "$arn" \
+      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+    [ $ret -ne 0 ] && logMessages /tmp/error.log
+  done
+}
+
+terminateInstancesInVpc() {
+  vpcId="$1"
+
+  aws ec2 describe-instances \
+    --region $AWS_REGION \
+    --filters Name=vpc-id,Values=$vpcId Name=instance-state-name,Values=pending,running,stopping,stopped \
+    > /tmp/instances.json 2>/dev/null
+
+  for iid in $(jq -r '.Reservations[]?.Instances[]?.InstanceId' /tmp/instances.json); do
+    echo "Disable EC2 termination protection: $iid"
+    aws ec2 modify-instance-attribute \
+      --instance-id "$iid" \
+      --no-disable-api-termination \
+      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+    [ $ret -ne 0 ] && logMessages /tmp/error.log
+
+    echo "Terminate EC2 instance: $iid"
+    aws ec2 terminate-instances \
+      --instance-ids "$iid" \
+      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+    [ $ret -ne 0 ] && logMessages /tmp/error.log
+  done
+}
+
+deleteNatGatewaysInVpc() {
+  vpcId="$1"
+
+  aws ec2 describe-nat-gateways \
+    --region $AWS_REGION \
+    --filter Name=vpc-id,Values=$vpcId \
+    > /tmp/nat.json 2>/dev/null
+
+  for nat in $(jq -r '.NatGateways[]? | select(.State != "deleted") | .NatGatewayId' /tmp/nat.json); do
+    echo "Delete NAT Gateway: $nat"
+    aws ec2 delete-nat-gateway \
+      --nat-gateway-id "$nat" \
+      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+    [ $ret -ne 0 ] && logMessages /tmp/error.log
+  done
+
+  while true; do
+    aws ec2 describe-nat-gateways \
+      --region $AWS_REGION \
+      --filter Name=vpc-id,Values=$vpcId \
+      > /tmp/nat.json 2>/dev/null
+
+    natLeft=$(jq -r '[.NatGateways[]? | select(.State != "deleted")] | length' /tmp/nat.json)
+    [ "$natLeft" == "0" ] && break
+
+    echo "Waiting for NAT Gateways to disappear in VPC $vpcId ..."
+    sleep 15
+  done
+}
+
+deleteVpcEndpointsInVpc() {
+  vpcId="$1"
+
+  aws ec2 describe-vpc-endpoints \
+    --region $AWS_REGION \
+    --filters Name=vpc-id,Values=$vpcId \
+    > /tmp/vpce.json 2>/dev/null
+
+  ids=$(jq -r '.VpcEndpoints[]? | .VpcEndpointId' /tmp/vpce.json | xargs)
+  [ -z "$ids" ] && return
+
+  echo "Delete VPC endpoints: $ids"
+  aws ec2 delete-vpc-endpoints \
+    --vpc-endpoint-ids $ids \
+    --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+  [ $ret -ne 0 ] && logMessages /tmp/error.log
+}
+
+deleteFlowLogsInVpc() {
+  vpcId="$1"
+
+  aws ec2 describe-flow-logs \
+    --region $AWS_REGION \
+    --filter Name=resource-id,Values=$vpcId \
+    > /tmp/flowlogs.json 2>/dev/null
+
+  ids=$(jq -r '.FlowLogs[]? | .FlowLogId' /tmp/flowlogs.json | xargs)
+  [ -z "$ids" ] && return
+
+  echo "Delete Flow Logs: $ids"
+  aws ec2 delete-flow-logs \
+    --flow-log-ids $ids \
+    --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+  [ $ret -ne 0 ] && logMessages /tmp/error.log
+}
+
+detachAndDeleteInternetGateways() {
+  vpcId="$1"
+
+  aws ec2 describe-internet-gateways \
+    --region $AWS_REGION \
+    --filters Name=attachment.vpc-id,Values=$vpcId \
+    > /tmp/igw.json 2>/dev/null
+
+  for igw in $(jq -r '.InternetGateways[]? | .InternetGatewayId' /tmp/igw.json); do
+    echo "Detach Internet Gateway: $igw from $vpcId"
+    aws ec2 detach-internet-gateway \
+      --internet-gateway-id "$igw" \
+      --vpc-id "$vpcId" \
+      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+    [ $ret -ne 0 ] && logMessages /tmp/error.log
+
+    echo "Delete Internet Gateway: $igw"
+    aws ec2 delete-internet-gateway \
+      --internet-gateway-id "$igw" \
+      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+    [ $ret -ne 0 ] && logMessages /tmp/error.log
+  done
+}
+
+deleteEgressOnlyInternetGateways() {
+  vpcId="$1"
+
+  aws ec2 describe-egress-only-internet-gateways \
+    --region $AWS_REGION \
+    --filters Name=attachment.vpc-id,Values=$vpcId \
+    > /tmp/eigw.json 2>/dev/null
+
+  for eigw in $(jq -r '.EgressOnlyInternetGateways[]? | .EgressOnlyInternetGatewayId' /tmp/eigw.json); do
+    echo "Delete Egress-Only Internet Gateway: $eigw"
+    aws ec2 delete-egress-only-internet-gateway \
+      --egress-only-internet-gateway-id "$eigw" \
+      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+    [ $ret -ne 0 ] && logMessages /tmp/error.log
+  done
+}
+
+deleteAvailableNetworkInterfacesInVpc() {
+  vpcId="$1"
+
+  aws ec2 describe-network-interfaces \
+    --region $AWS_REGION \
+    --filters Name=vpc-id,Values=$vpcId \
+    > /tmp/eni.json 2>/dev/null
+
+  for eni in $(jq -r '.NetworkInterfaces[]? | select(.Status == "available" and (.RequesterManaged | not)) | .NetworkInterfaceId' /tmp/eni.json); do
+    echo "Delete ENI: $eni"
+    aws ec2 delete-network-interface \
+      --network-interface-id "$eni" \
+      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+    [ $ret -ne 0 ] && logMessages /tmp/error.log
+  done
+}
+
+deleteSubnetsInVpc() {
+  vpcId="$1"
+
+  aws ec2 describe-subnets \
+    --region $AWS_REGION \
+    --filters Name=vpc-id,Values=$vpcId \
+    > /tmp/subnets.json 2>/dev/null
+
+  for subnet in $(jq -r '.Subnets[]? | .SubnetId' /tmp/subnets.json); do
+    echo "Delete Subnet: $subnet"
+    aws ec2 delete-subnet \
+      --subnet-id "$subnet" \
+      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+    [ $ret -ne 0 ] && logMessages /tmp/error.log
+  done
+}
+
+deleteNonMainRouteTablesInVpc() {
+  vpcId="$1"
+
+  aws ec2 describe-route-tables \
+    --region $AWS_REGION \
+    --filters Name=vpc-id,Values=$vpcId \
+    > /tmp/rtb.json 2>/dev/null
+
+  for rtb in $(jq -r '.RouteTables[]? | select(([.Associations[]?.Main] | any) | not) | .RouteTableId' /tmp/rtb.json); do
+    echo "Delete Route Table: $rtb"
+    aws ec2 delete-route-table \
+      --route-table-id "$rtb" \
+      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+    [ $ret -ne 0 ] && logMessages /tmp/error.log
+  done
+}
+
+deleteNonDefaultSecurityGroupsInVpc() {
+  vpcId="$1"
+
+  aws ec2 describe-security-groups \
+    --region $AWS_REGION \
+    --filters Name=vpc-id,Values=$vpcId \
+    > /tmp/sg.json 2>/dev/null
+
+  for sg in $(jq -r '.SecurityGroups[]? | select(.GroupName != "default") | .GroupId' /tmp/sg.json); do
+    echo " ▪ Delete Security Group: $sg"
+    aws ec2 delete-security-group \
+      --group-id "$sg" \
+      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+    [ $ret -ne 0 ] && logMessages /tmp/error.log
+  done
+}
+
+deleteNonDefaultNetworkAclsInVpc() {
+  vpcId="$1"
+
+  aws ec2 describe-network-acls \
+    --region $AWS_REGION \
+    --filters Name=vpc-id,Values=$vpcId \
+    > /tmp/nacl.json 2>/dev/null
+
+  for nacl in $(jq -r '.NetworkAcls[]? | select(.IsDefault == false) | .NetworkAclId' /tmp/nacl.json); do
+    echo "Delete Network ACL: $nacl"
+    aws ec2 delete-network-acl \
+      --network-acl-id "$nacl" \
+      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+    [ $ret -ne 0 ] && logMessages /tmp/error.log
+  done
+}
+
+findVpcInFailedStack() {
+  stack="$1"
+
+  aws cloudformation list-stack-resources \
+    --stack-name "$stack" \
+    --region $AWS_REGION > /tmp/stack-resources.json 2>/dev/null
+
+  jq -r '.StackResourceSummaries[]? | select(.ResourceType == "AWS::EC2::VPC") | .PhysicalResourceId' /tmp/stack-resources.json | head -1
+}
+
+deleteVpcDependencies() {
+  vpcId="$1"
+
+  echo " ▪ Resolve dependencies for VPC: $vpcId"
+
+  deleteClassicLoadBalancersInVpc "$vpcId"
+  deleteElbv2LoadBalancersInVpc "$vpcId"
+  terminateInstancesInVpc "$vpcId"
+  deleteFlowLogsInVpc "$vpcId"
+  deleteVpcEndpointsInVpc "$vpcId"
+  deleteNatGatewaysInVpc "$vpcId"
+
+  deleteEfsFileSystemsInVpc "$vpcId"
+
+  deleteAvailableNetworkInterfacesInVpc "$vpcId"
+  deleteSubnetsInVpc "$vpcId"
+  deleteNonMainRouteTablesInVpc "$vpcId"
+  deleteNonDefaultSecurityGroupsInVpc "$vpcId"
+  deleteNonDefaultNetworkAclsInVpc "$vpcId"
+  detachAndDeleteInternetGateways "$vpcId"
+  deleteEgressOnlyInternetGateways "$vpcId"
+}
+
+disableTerminationProtectionIfNeeded() {
+  stack="$1"
+
+  ptc=$(aws cloudformation describe-stacks \
+    --stack-name "$stack" \
+    --region $AWS_REGION \
+    --query "Stacks[0].EnableTerminationProtection" \
+    --output text 2>/dev/null)
+
+  [ "$ptc" == "None" ] && ptc="False"
+
+  #echo "DEBUG: $stack Protected: $ptc"
+
+  if [ "$ptc" == "True" ]; then
+    aws cloudformation update-termination-protection \
+      --stack-name "$stack" \
+      --no-enable-termination-protection \
+      --region $AWS_REGION \
+      --no-cli-pager > /tmp/error.log 2>&1; ret=$?
+
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to disable termination protection on stack $stack"
+      exit 1
+    fi
+  fi
+}
+
+deleteStackAndRepairIfNeeded() {
+  stack="$1"
+
+  while true; do
+    stt=$(aws cloudformation describe-stacks \
+      --stack-name "$stack" \
+      --region $AWS_REGION \
+      --query "Stacks[0].StackStatus" \
+      --output text 2>/dev/null)
+    ret=$?
+
+    if [ $ret -ne 0 ]; then
+      echo " ▪ ClusterStack successfuly deleted"
+      break
+    fi
+
+    if [ "$stt" == "DELETE_COMPLETE" ]; then
+      break
+    fi
+
+    if [ "$stt" == "DELETE_IN_PROGRESS" ]; then
+      sleep 15
+      continue
+    fi
+
+    if [ "$stt" == "DELETE_FAILED" ]; then
+      vpcId=$(findVpcInFailedStack "$stack")
+
+      if [ -n "$vpcId" -a "$vpcId" != "null" ]; then
+        deleteVpcDependencies "$vpcId"
+      else
+        echo "DELETE_FAILED stack $stack but no VPC resource was found"
+        aws cloudformation describe-stack-events \
+          --stack-name "$stack" \
+          --region $AWS_REGION \
+          --no-cli-pager \
+          --query "StackEvents[?ResourceStatus=='DELETE_FAILED'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatusReason]" \
+          --output table
+        exit 1
+      fi
+    fi
+
+    aws cloudformation delete-stack \
+      --stack-name "$stack" \
+      --region $AWS_REGION \
+      --no-cli-pager > /tmp/error.log 2>&1; ret=$?
+
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to delete stack $stack"
+      exit 1
+    fi
+
+    sleep 10
+  done
+}
+
+deleteAllStacks() {
+  aws cloudformation list-stacks \
+    --region $AWS_REGION \
+    --stack-status-filter CREATE_IN_PROGRESS CREATE_FAILED CREATE_COMPLETE ROLLBACK_IN_PROGRESS ROLLBACK_FAILED ROLLBACK_COMPLETE DELETE_IN_PROGRESS DELETE_FAILED UPDATE_IN_PROGRESS UPDATE_COMPLETE_CLEANUP_IN_PROGRESS UPDATE_COMPLETE UPDATE_FAILED UPDATE_ROLLBACK_IN_PROGRESS UPDATE_ROLLBACK_FAILED UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS UPDATE_ROLLBACK_COMPLETE REVIEW_IN_PROGRESS IMPORT_IN_PROGRESS IMPORT_COMPLETE IMPORT_ROLLBACK_IN_PROGRESS IMPORT_ROLLBACK_FAILED IMPORT_ROLLBACK_COMPLETE \
+    > /tmp/output.json 2>/dev/null
+
+  for stack in $(jq -r '.StackSummaries[]?.StackName' /tmp/output.json); do
+    stt=$(jq -r --arg key "$stack" '.StackSummaries[] | select(.StackName == $key).StackStatus' /tmp/output.json)
+
+    [ "$stt" == "DELETE_COMPLETE" -o "$stt" == "DELETE_IN_PROGRESS" ] && continue
+
+    messageTitle "Cleaning up Stack: $stack ($stt)"
+
+    disableTerminationProtectionIfNeeded "$stack"
+    deleteStackAndRepairIfNeeded "$stack"
+  done
+}
+
+deleteEfsAccessPointsInFileSystem() {
+  fsId="$1"
+
+  aws efs describe-access-points \
+    --region $AWS_REGION \
+    --file-system-id "$fsId" \
+    > /tmp/efs-ap.json 2>/dev/null
+
+  for ap in $(jq -r '.AccessPoints[]? | .AccessPointId' /tmp/efs-ap.json); do
+    echo "Delete EFS Access Point: $ap"
+    aws efs delete-access-point \
+      --access-point-id "$ap" \
+      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+    [ $ret -ne 0 ] && logMessages /tmp/error.log
+  done
+
+  while true; do
+    aws efs describe-access-points \
+      --region $AWS_REGION \
+      --file-system-id "$fsId" \
+      > /tmp/efs-ap.json 2>/dev/null
+
+    apLeft=$(jq -r '[.AccessPoints[]?] | length' /tmp/efs-ap.json)
+    [ "$apLeft" == "0" ] && break
+
+    echo "Waiting for EFS Access Points to disappear for filesystem $fsId ..."
+    sleep 10
+  done
+}
+
+deleteEfsMountTargetsInVpc() {
+  fsId="$1"
+  vpcId="$2"
+
+  aws efs describe-mount-targets \
+    --file-system-id "$fsId" \
+    --region $AWS_REGION \
+    > /tmp/efs-mt.json 2>/dev/null
+
+  for mt in $(jq -r --arg vpc "$vpcId" '.MountTargets[]? | select(.VpcId == $vpc) | .MountTargetId' /tmp/efs-mt.json); do
+    echo "Delete EFS Mount Target: $mt"
+    aws efs delete-mount-target \
+      --mount-target-id "$mt" \
+      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+    [ $ret -ne 0 ] && logMessages /tmp/error.log
+  done
+
+  while true; do
+    aws efs describe-mount-targets \
+      --file-system-id "$fsId" \
+      --region $AWS_REGION \
+      > /tmp/efs-mt.json 2>/dev/null
+
+    mtLeft=$(jq -r --arg vpc "$vpcId" '[.MountTargets[]? | select(.VpcId == $vpc)] | length' /tmp/efs-mt.json)
+    [ "$mtLeft" == "0" ] && break
+
+    echo "Waiting for EFS Mount Targets to disappear for filesystem $fsId ..."
+    sleep 10
+  done
+}
+
+deleteEfsFileSystemsInVpc() {
+  vpcId="$1"
+
+  aws efs describe-file-systems \
+    --region $AWS_REGION \
+    > /tmp/efs-fs.json 2>/dev/null
+
+  for fsId in $(jq -r '.FileSystems[]? | .FileSystemId' /tmp/efs-fs.json); do
+
+    aws efs describe-mount-targets \
+      --file-system-id "$fsId" \
+      --region $AWS_REGION \
+      > /tmp/efs-mt.json 2>/dev/null
+
+    fsInVpc=$(jq -r --arg vpc "$vpcId" '[.MountTargets[]? | select(.VpcId == $vpc)] | length' /tmp/efs-mt.json)
+
+    [ "$fsInVpc" == "0" ] && continue
+
+    echo "Delete EFS dependencies for filesystem: $fsId"
+
+    deleteEfsAccessPointsInFileSystem "$fsId"
+    deleteEfsMountTargetsInVpc "$fsId" "$vpcId"
+
+    echo "Delete EFS File System: $fsId"
+    aws efs delete-file-system \
+      --file-system-id "$fsId" \
+      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+    [ $ret -ne 0 ] && logMessages /tmp/error.log
+  done
+}
+
 
 

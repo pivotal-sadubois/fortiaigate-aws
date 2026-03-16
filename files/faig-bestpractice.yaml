@@ -1,0 +1,98 @@
+# values-faig-bestpractice.yaml
+
+#  eks.amazonaws.com/nodegroup: system-ng
+
+api:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+core:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+webui:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Scanner Defaults gemäss Guide (DefaultResources)
+scanners:
+  defaultResources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+
+  # ── Scanner Spot Node Scheduling ──────────────────────────────────────
+  # When nodeSelector is set, scanners run on Spot nodes instead of
+  # license-bound faig-ng nodes. This saves ~60-70% on scanner compute.
+  # Remove or comment out nodeSelector to revert to license node scheduling.
+  nodeSelector:
+    role: scanner
+
+  # Tolerations for Spot instance interruptions
+  tolerations:
+    - key: "node.kubernetes.io/spot"
+      operator: "Exists"
+      effect: "NoSchedule"
+
+  # Wichtig: alle Scanner-Replikas auf 1 (du hast aktuell teils 2 Pods pro Scanner-Typ)
+  anonymize:
+    replicas: 1
+  language:
+    replicas: 1
+  promptinjection:
+    replicas: 1
+  code:
+    replicas: 1
+  toxicity:
+    replicas: 1
+  sensitive:
+    replicas: 1
+  customrule:
+    replicas: 1
+  deanonymize:
+    replicas: 1
+
+postgresql:
+  primary:
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+
+redis:
+  master:
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+# Force FortiAIGate shared PVC to use EFS (dedicated StorageClass)
+storage:
+  storageClass: efs-sc-faig
+

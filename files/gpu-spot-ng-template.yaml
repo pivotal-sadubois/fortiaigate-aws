@@ -1,0 +1,23 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: CLUSTER
+  region: REGION
+
+managedNodeGroups:
+  - name: gpu-spot-ng
+    instanceTypes:
+      - g5.2xlarge
+      - g5.4xlarge
+    spot: true
+    desiredCapacity: 1
+    minSize: 0
+    maxSize: 1
+    volumeSize: 200
+    privateNetworking: true
+    labels:
+      workload: faig
+    tags:
+      k8s.io/cluster-autoscaler/enabled: "true"
+      k8s.io/cluster-autoscaler/CLUSTER: "owned"
