@@ -1,0 +1,132 @@
+global:
+XXXLICENSESXXX
+
+fortiaigate:
+  gpu:
+    enabled: true
+  image:
+    repository: "XXX_REPONAME_XXX"
+    tag: "XXX_REPOTAG_XXX"
+
+postgresql:
+  primary:
+    persistence:
+      storageClass: "XXXEFSSCXXX"
+
+redis:
+  master:
+    persistence:
+      storageClass: "XXXEFSSCXXX"
+    nodeSelector:
+      eks.amazonaws.com/nodegroup: faig-ng
+  replica:
+    nodeSelector:
+      eks.amazonaws.com/nodegroup: faig-ng
+
+storage:
+  storageClass: "XXXEFSSCXXX"
+
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    # API and WebUI both run TLS — ALB must use HTTPS for backend connections
+    alb.ingress.kubernetes.io/backend-protocol: HTTPS
+    alb.ingress.kubernetes.io/healthcheck-protocol: HTTPS
+    alb.ingress.kubernetes.io/healthcheck-path: /fortiaigate/health/readiness
+    alb.ingress.kubernetes.io/healthcheck-port: traffic-port
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "10"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "3"
+    # 404 is acceptable for webui (frontend does not expose /fortiaigate/health/readiness)
+    alb.ingress.kubernetes.io/success-codes: "200,301,302,404"
+
+api:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+core:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+webui:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# Scanner Defaults gemäss Guide (DefaultResources)
+scanners:
+  defaultResources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+
+  nodeSelector:
+    role: scanner
+
+  # Tolerations for Spot instance interruptions
+  tolerations:
+    - key: "node.kubernetes.io/spot"
+      operator: "Exists"
+      effect: "NoSchedule"
+
+  anonymize:
+    replicas: 1
+  language:
+    replicas: 1
+  promptinjection:
+    replicas: 1
+  code:
+    replicas: 1
+  toxicity:
+    replicas: 1
+  sensitive:
+    replicas: 1
+  customrule:
+    replicas: 1
+  deanonymize:
+    replicas: 1
+
+postgresql:
+  primary:
+    resources:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+
+redis:
+  master:
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+
