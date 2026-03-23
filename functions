@@ -1850,9 +1850,10 @@ waitForVpcResourcesToSettle() {
 
   echo " ▪ Waiting for VPC resources to settle ($VPC_ID)"
 
-  # Proactively delete NAT gateways and orphaned ENIs to prevent CloudFormation VPC deletion stalls
+  # Proactively delete VPC dependencies to prevent CloudFormation stalls on VPC deletion
   deleteNatGatewaysInVpc "$VPC_ID"
   deleteAvailableNetworkInterfacesInVpc "$VPC_ID"
+  deleteNonDefaultSecurityGroupsInVpc "$VPC_ID"
 
   n=0
   while [ $n -lt 40 ]; do
@@ -2010,6 +2011,21 @@ verifyOrLoginSSO() {
 
   export AWS_PROFILE="$PROFILE"
   echo "AWS SSO login successful (profile: $PROFILE)"
+}
+
+deleteClassicLoadBalancersInVpc() {
+  vpcId="$1"
+
+  aws elb describe-load-balancers \
+    --region $AWS_REGION > /tmp/elbs.json 2>/dev/null
+
+  for lb in $(jq -r --arg vpc "$vpcId" '.LoadBalancerDescriptions[]? | select(.VPCId == $vpc) | .LoadBalancerName' /tmp/elbs.json); do
+    echo "Delete Classic Load Balancer: $lb"
+    aws elb delete-load-balancer \
+      --load-balancer-name "$lb" \
+      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+    [ $ret -ne 0 ] && logMessages /tmp/error.log
+  done
 }
 
 deleteElbv2LoadBalancersInVpc() {
