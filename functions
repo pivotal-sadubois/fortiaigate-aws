@@ -1850,6 +1850,10 @@ waitForVpcResourcesToSettle() {
 
   echo " ▪ Waiting for VPC resources to settle ($VPC_ID)"
 
+  # Proactively delete NAT gateways and orphaned ENIs to prevent CloudFormation VPC deletion stalls
+  deleteNatGatewaysInVpc "$VPC_ID"
+  deleteAvailableNetworkInterfacesInVpc "$VPC_ID"
+
   n=0
   while [ $n -lt 40 ]; do
 
@@ -1875,8 +1879,8 @@ waitForVpcResourcesToSettle() {
 
     echo "   ▪ ENIs:$eniCount NAT:$natCount ELBv2:$lbCount"
 
-    # Only ALB must be gone before cluster deletion
-    [ "$lbCount" = "0" ] && break
+    # LBs and NAT gateways must both be gone before cluster deletion
+    [ "$lbCount" = "0" -a "$natCount" = "0" ] && break
 
     sleep 15
     let n=n+1
@@ -1916,7 +1920,7 @@ waitForClusterStackDeletion() {
     [ "$STACK_STATUS" = "DELETE_COMPLETE" ] && break
     [ "$STACK_STATUS" = "DELETE_FAILED" ] && break
 
-    sleep 120
+    sleep 20
   done
 }
 
