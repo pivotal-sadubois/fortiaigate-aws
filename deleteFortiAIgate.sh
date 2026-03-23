@@ -57,8 +57,8 @@ deleteEKScluster
 # Step 4 - Wait for cluster CloudFormation stack and repair if needed
 # ------------------------------------------------------------------------------------------
 waitForClusterStackDeletion
-#repairClusterStackIfNeeded
-#waitForClusterStackDeletion
+repairClusterStackIfNeeded
+waitForClusterStackDeletion
 deleteAllStacks
 
 # Cleanup deployment state file only
