@@ -1,0 +1,24 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: CLUSTER
+  region: REGION
+  version: "1.35"
+
+managedNodeGroups:
+  - name: faig-ng
+    instanceType: m6i.2xlarge
+    desiredCapacity: 2
+    minSize: 1
+    maxSize: 3
+    volumeSize: 80
+    privateNetworking: true
+
+  - name: gpu-spot-ng
+    instanceType: g4dn.xlarge
+    desiredCapacity: 1
+    minSize: 0
+    maxSize: 2
+    volumeSize: 200
+    privateNetworking: true
