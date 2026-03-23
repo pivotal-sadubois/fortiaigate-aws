@@ -1,5 +1,4 @@
 #!/bin/bash
-set -euo pipefail
 #===============================================================================
 # SCRIPT NAME:    uploadECR.sh
 # DESCRIPTION:    Automated ECR Upload Script (macOS-compatible)
