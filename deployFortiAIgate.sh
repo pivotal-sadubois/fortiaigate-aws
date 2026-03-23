@@ -30,9 +30,9 @@ installEKSCluster
 installALBloadBalancer
 installIngressCertificate "$ROUT53_HOSTED_ZONE_ID"
 
-#deployDemoApp
-#updateAppDNS "demo-app" "demo.$ROUT53_DOMAIN" "$ROUT53_HOSTED_ZONE_ID"
-#testAppDNS "demo.$ROUT53_DOMAIN"
+deployDemoApp
+updateAppDNS "demo-app" "demo.$ROUT53_DOMAIN" "$ROUT53_HOSTED_ZONE_ID"
+testAppDNS "demo.$ROUT53_DOMAIN"
 
 messageTitle "Install Kubernetes Components"
 
@@ -45,6 +45,8 @@ EFS_STORAGE_CLASS=efs-sc      EFS_MODE=shared installEFSstorageClass
 installNVIDIAdevicePlugin
 installStorageClassGP3
 installFAIGchart
+
+#installOpenWebUI
 
 
 exit

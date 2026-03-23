@@ -617,8 +617,10 @@ updateAppDNS() {
   # --------------------------------------------------------------------------
   # Switch to DNS account
   # --------------------------------------------------------------------------
-  preserveAWScontext
-  switchToDNSaccount
+  if [ "$ROUT53_SEPERATE_ACCOUNT" == "true" -o "$ROUT53_SEPERATE_ACCOUNT" == "" ]; then 
+    preserveAWScontext
+    switchToDNSaccount
+  fi
 
   # --------------------------------------------------------------------------
   # Read current Route53 target before change
@@ -731,7 +733,9 @@ updateAppDNS() {
     exit 1
   fi
 
-  restoreAWScontext
+  if [ "$ROUT53_SEPERATE_ACCOUNT" == "true" -o "$ROUT53_SEPERATE_ACCOUNT" == "" ]; then 
+    restoreAWScontext
+  fi
 
   # --------------------------------------------------------------------------
   # Wait until DNS resolves publicly
@@ -2639,7 +2643,13 @@ installFAIGchart() {
       -e "s/XXX_REPOTAG_XXX/$ECR_FORTIAIGATE_TAG/g" \
       -e '/^XXXLICENSESXXX$/{r /tmp/values-licenses.yaml' -e ';d;}' cfg/values-template.yaml > /tmp/values.yaml
 
-  echo "helm install fortiaigate ${STAGEDIR}/fortiaigate -n fortiaigate -f /tmp/values.yaml --create-namespace"
+  echo " ▪ Install / upgrade ....: fortiaigate" 
+  helm upgrade --install fortiaigate ${STAGEDIR}/fortiaigate -n fortiaigate -f /tmp/values.yaml --create-namespace --wait >  /tmp/error.log 2>&1; ret=$?
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to install Helm chart fortiaigate"
+    exit 1
+  fi
 }
 
 # ------------------------------------------------------------------------------------------
@@ -3105,7 +3115,27 @@ EOF
   kubectl get storageclass "$EFS_STORAGE_CLASS"
 }
 
+# ------------------------------------------------------------------------------------------
+# Function Name ......: installOpenWebUI
+# Function Purpose ...: Install OpenWebUI
+# ------------------------------------------------------------------------------------------
+# Dependencies .......: EFS_FILE_SYSTEM_ID, EFS_STORAGE_CLASS
+# Optional Vars ......: EFS_MODE=[shared|faig]
+# ------------------------------------------------------------------------------------------
+installOpenWebUI() {
 
+  echo " ▪ Add Helm Repo https://aws.github.io/eks-charts"
+  helm repo add open-webui https://helm.openwebui.com
+
+  echo " ▪ Install / upgrade ....: fortiaigate"
+  helm upgrade --install fortiaigate ${STAGEDIR}/fortiaigate -n fortiaigate -f /tmp/values.yaml --create-namespace --wait >  /tmp/error.log 2>&1; ret=$?
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to install Helm chart fortiaigate"
+    exit 1
+  fi
+
+}
 
 
 
