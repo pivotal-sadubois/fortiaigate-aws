@@ -2621,6 +2621,7 @@ installFAIGchart() {
   done
 
   nodes=$(kubectl get nodes -L eks.amazonaws.com/nodegroup -o json | jq -r '.items[].metadata.name')
+  nodes=$(kubectl get nodes -L eks.amazonaws.com/nodegroup -o json  | jq -r '.items[].metadata | select(.labels."alpha.eksctl.io/nodegroup-name" == "faig-ng").name')
 
   i=0;
   echo "  licenses:" > /tmp/values-licenses.yaml
