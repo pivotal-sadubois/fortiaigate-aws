@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 #===============================================================================
-# SCRIPT NAME:    uploadFortiAIgateImagesToECR.sh
+# SCRIPT NAME:    uploadECR.sh
 # DESCRIPTION:    Automated ECR Upload Script (macOS-compatible)
 # AUTHOR:         Adrian Sameli / Sacha Dubois, Fortinet
 # CREATED:        2026-03-11
@@ -11,15 +11,18 @@ set -euo pipefail
 # 2026-03-11 sdubois Initial version
 #===============================================================================
 [ -f ./functions ] && . ./functions
-if [ -f $HOME/.fortiaigate.cfg ]; then
-   . $HOME/.fortiaigate.cfg
+if [ -f $HOME/.faig.cfg ]; then
+   . $HOME/.faig.cfg
 else
-  echo "ERROR: Config file $HOME/.fortiaigate.cfg not available"
+  echo "ERROR: Config file $HOME/.faig.cfg not available"
   exit
 fi
 
+STAGEDIR=/tmp/faig_$ECR_FORTIAIGATE_TAG
+
+
 echo ""
-echo "uploadFortiAIgateImagesToECR.sh - Upload FortiAIgate Images to ECR"
+echo "uploadECR.sh.sh - Upload FortiAIgate Images to ECR"
 echo "by Adrian Sameli / Sacha Dubois, Fortinet"
 echo "------------------------------------------------------------------------------------------"
 
@@ -41,6 +44,18 @@ checkLocalConfig
 verifyOrLoginSSO
 verifyCLIutils registry
 verifyAWScredentials
+
+# ----------------------------------------------------------------------------------------
+# Cleaning up ECR Repository - deleting all images that are not tagged ECR_FORTIAIGATE_TAG
+# ----------------------------------------------------------------------------------------
+tags=$(getImageTags | sort | uniq -c | awk '{ print $2 }')
+if [ "$tags" != "" ]; then 
+  messageTitle "Cleaning up old FortiAIgate Images from the ECR Repository"
+  for tag in $tags; do
+    [ "$tag" == "$ECR_FORTIAIGATE_TAG" ] && continue
+    deleteImagebyTag $tag
+  done
+fi
 
 skopeo --version >/dev/null 2>&1; ret=$?
 if [ $ret -ne 0 ]; then
@@ -167,8 +182,12 @@ fi
 echo ""
 ok "All images uploaded to ECR with tag: $ECR_FORTIAIGATE_TAG"
 
-echo "ECR_FORTIAIGATE_TAG:$ECR_FORTIAIGATE_TAG"
-echo "ECR_FORTIAIGATE_SOURCE_DIR:$ECR_FORTIAIGATE_SOURCE_DIR"
-echo "ECR_REGION:$ECR_REGION"
+echo " ▪  Write ECR configuration to state file (\$HOME/.faig-ecr-upload.stat)"
+echo "export ECR_FORTIAIGATE_REPOSITORY=$ECR_FORTIAIGATE_REPOSITORY"       >  $HOME/.faig-ecr-upload.stat
+echo "export ECR_FORTIAIGATE_TAG=$ECR_FORTIAIGATE_TAG"                     >> $HOME/.faig-ecr-upload.stat
+echo "export ECR_FORTIAIGATE_SOURCE_DIR=$ECR_FORTIAIGATE_SOURCE_DIR"       >> $HOME/.faig-ecr-upload.stat
+echo "export ECR_REGION=$ECR_REGION"                                       >> $HOME/.faig-ecr-upload.stat
+
+
 
 exit

@@ -11,9 +11,9 @@ managedNodeGroups:
       - g5.2xlarge
       - g5.4xlarge
     spot: true
-    desiredCapacity: 1
-    minSize: 0
-    maxSize: 1
+    desiredCapacity: 3
+    minSize: 3
+    maxSize: 3
     volumeSize: 200
     privateNetworking: true
     labels:

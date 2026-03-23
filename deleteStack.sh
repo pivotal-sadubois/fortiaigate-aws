@@ -10,10 +10,10 @@
 # 2025-03-15 sdubois Initial version
 #===============================================================================
 [ -f ./functions ] && . ./functions
-if [ -f $HOME/.fortiaigate.cfg ]; then
-   . $HOME/.fortiaigate.cfg
+if [ -f $HOME/.faig.cfg ]; then
+   . $HOME/.faig.cfg
 else
-  echo "ERROR: Config file $HOME/.fortiaigate.cfg not available"
+  echo "ERROR: Config file $HOME/.faig.cfg not available"
   exit
 fi
 

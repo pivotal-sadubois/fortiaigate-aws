@@ -22,58 +22,67 @@ DEBUG=0
 # Return Value .......: none
 # ------------------------------------------------------------------------------------------
 checkLocalConfig() {
-  if [ -f $HOME/.fortiaigate.cfg ]; then 
-    . $HOME/.fortiaigate.cfg
+  if [ -f $HOME/.faig.cfg ]; then 
+    . $HOME/.faig.cfg
 
   # Make sure AWS Access credentials are set
   if [ -z "$AWS_PROFILE" ]; then
-    echo "ERROR: AWS Access Credentials are not set in (\$HOME/.fortiaigate.cfg), please set them as follows: "
+    echo "ERROR: AWS Access Credentials are not set in (\$HOME/.faig.cfg), please set them as follows: "
     echo '       export AWS_PROFILE="profile-name"'
     exit 1
   fi
 
   if [ -z "$AWS_REGION" ]; then 
-    echo "ERROR: AWS Region is not configured in (\$HOME/.fortiaigate.cfg), please set them as follows: "
+    echo "ERROR: AWS Region is not configured in (\$HOME/.faig.cfg), please set them as follows: "
     echo '       export AWS_REGION=eu-north-1'
     exit 1
   fi
 
   if [ -z "$EKS_CLUSTER_NAME" ]; then 
-    echo "ERROR: AWS Region is not configured in (\$HOME/.fortiaigate.cfg), please set them as follows: "
+    echo "ERROR: AWS Region is not configured in (\$HOME/.faig.cfg), please set them as follows: "
     echo '       export EKS_CLUSTER_NAME=\"eks-genai-fortiaigate\"'
     exit 1
   fi
 
   if [ -z "$ROUT53_DOMAIN" ]; then 
-    echo "ERROR: AWS Region is not configured in (\$HOME/.fortiaigate.cfg), please set them as follows: "
+    echo "ERROR: AWS Region is not configured in (\$HOME/.faig.cfg), please set them as follows: "
+    echo '       export ROUT53_DOMAIN=\"fortiaigate.fortidemo.ch\"'
+    exit 1
+  fi
+
+  if [ -z "$FAID_LICENSE_DIR" ]; then 
+    echo "ERROR: AWS Region is not configured in (\$HOME/.faig.cfg), please set them as follows: "
     echo '       export ROUT53_DOMAIN=\"fortiaigate.fortidemo.ch\"'
     exit 1
   fi
 
   else
-    echo "ERROR: FortiAIgate Deployment Configu (\$HOME/.fortiaigate.cfg) not set"
+    echo "ERROR: FortiAIgate Deployment Configu (\$HOME/.faig.cfg) not set"
     echo "       Please fill out the required parameters in the file"
 
-    echo "export AWS_REGION=\"\""                    >  $HOME/.fortiaigate.cfg
-    echo "export EKS_CLUSTER_NAME=\"\""              >> $HOME/.fortiaigate.cfg
-    echo "export EKS_CLUSTER_NAME=\"\""              >> $HOME/.fortiaigate.cfg
-    echo ""                                          >> $HOME/.fortiaigate.cfg
-    echo "# AWS Access Credentials"                  >> $HOME/.fortiaigate.cfg
-    echo "AWS_PROFILE=\"\""                          >> $HOME/.fortiaigate.cfg
-    echo ""                                          >> $HOME/.fortiaigate.cfg
-    echo "# AWS Rout54 Access Credentials"           >> $HOME/.fortiaigate.cfg
-    echo "ROUT53_DNS_UPDATES=\"false\""              >> $HOME/.fortiaigate.cfg
-    echo "ROUT53_REGION=\"\""                        >> $HOME/.fortiaigate.cfg
-    echo "ROUT53_ACCESS_KEY_ID=\"\""                 >> $HOME/.fortiaigate.cfg
-    echo "ROUT53_SECRET_ACCESS_KEY=\"\""             >> $HOME/.fortiaigate.cfg
-    echo "ROUT53_HOSTED_ZONE_ID=\"\""                >> $HOME/.fortiaigate.cfg
-    echo "ROUT53_DOMAIN=\"\""                        >> $HOME/.fortiaigate.cfg
-    echo ""                                          >> $HOME/.fortiaigate.cfg
-    echo "# AWS RCR Repository Configuration"        >> $HOME/.fortiaigate.cfg
-    echo "ECR_FORTIAIGATE_SOURCE_DIR=\"\""           >> $HOME/.fortiaigate.cfg
-    echo "ECR_FORTIAIGATE_TAG=\"\""                  >> $HOME/.fortiaigate.cfg
-    echo "ECR_REGION=\"\""                           >> $HOME/.fortiaigate.cfg
-
+    echo "export AWS_REGION=\"\""                       >  $HOME/.faig.cfg
+    echo "EKS_CLUSTER_NAME=\"\""                        >> $HOME/.faig.cfg
+    echo "EKS_ODMD_NG_NODES=1\"\""                      >> $HOME/.faig.cfg
+    echo "EKS_SPOT_NG_NODES=3\"\""                      >> $HOME/.faig.cfg
+    echo ""                                             >> $HOME/.faig.cfg
+    echo "# AWS Access Credentials"                     >> $HOME/.faig.cfg
+    echo "AWS_PROFILE=\"\""                             >> $HOME/.faig.cfg
+    echo ""                                             >> $HOME/.faig.cfg
+    echo "# AWS Rout54 Access Credentials"              >> $HOME/.faig.cfg
+    echo "ROUT53_DNS_UPDATES=\"false\""                 >> $HOME/.faig.cfg
+    echo "ROUT53_REGION=\"\""                           >> $HOME/.faig.cfg
+    echo "ROUT53_ACCESS_KEY_ID=\"\""                    >> $HOME/.faig.cfg
+    echo "ROUT53_SECRET_ACCESS_KEY=\"\""                >> $HOME/.faig.cfg
+    echo "ROUT53_HOSTED_ZONE_ID=\"\""                   >> $HOME/.faig.cfg
+    echo "ROUT53_DOMAIN=\"\""                           >> $HOME/.faig.cfg
+    echo ""                                             >> $HOME/.faig.cfg
+    echo "# FortiAiGate (FAIG) Configuration"           >> $HOME/.faig.cfg
+    echo "FAID_LICENSE_DIR=\"\$HOME/.faid/licenses\""   >> $HOME/.faig.cfg
+    echo ""                                             >> $HOME/.faig.cfg
+    echo "# AWS RCR Repository Configuration"           >> $HOME/.faig.cfg
+    echo "ECR_FORTIAIGATE_SOURCE_DIR=\"\""              >> $HOME/.faig.cfg
+    echo "ECR_FORTIAIGATE_TAG=\"\""                     >> $HOME/.faig.cfg
+    echo "ECR_REGION=\"\""                              >> $HOME/.faig.cfg
   fi
 } 
 
@@ -105,8 +114,9 @@ logMessages() {
 # ------------------------------------------------------------------------------------------
 messageLine() {
   #echo "------------------------------------------------------------------------------------------------------------------------------------------------------------------"
-  str="";n=0; while [ $n -lt $COLUMNS ]; do str="${str}-"; let n=n+1; done
- echo "$str"
+  COL=120
+  str="";n=0; while [ $n -lt $COL ]; do str="${str}-"; let n=n+1; done
+  echo "$str"
 }
 
 # ------------------------------------------------------------------------------------------
@@ -322,7 +332,12 @@ installEKSCluster() {
 
   cluster=$(aws eks list-clusters --region $AWS_REGION | jq --arg key "$EKS_CLUSTER_NAME" -r '.clusters[] | select(. == $key)')
   if [ "$cluster" != "$EKS_CLUSTER_NAME" ]; then
-    eksctl create cluster --name "$EKS_CLUSTER_NAME" --region $AWS_REGION --without-nodegroup > /tmp/error.log 2>&1; ret=$?
+    sed -e "s/CLUSTER/$EKS_CLUSTER_NAME/g" \
+        -e "s/REGION/$AWS_REGION/g"  \
+        -e "s/REGION/$AWS_REGION/g"  \
+        -e "s/REGION/$AWS_REGION/g"  \
+        files/eks-cluster-template.yaml > /tmp/eks-cluster.yaml
+    eksctl create cluster -f /tmp/eks-cluster.yaml --profile "$AWS_PROFILE" > /tmp/error.log 2>&1; ret=$?
     if [ $ret -ne 0 ]; then
       logMessages /tmp/error.log
       echo "ERROR: Cluster creatation failed"
@@ -332,9 +347,9 @@ installEKSCluster() {
     echo " ▪ Update Kubeconfig for the EKS Cluster"
     aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_REGION > /dev/null 2>&1
 
-    echo " ▪  Write EKS configuration to state file (\$HOME/.fortiaigate.stat)"
-    echo "export EKS_CLUSTER_NAME=$EKS_CLUSTER_NAME"       >  $HOME/.fortiaigate.stat
-    echo "export AWS_REGION=$AWS_REGION"                   >> $HOME/.fortiaigate.stat
+    echo " ▪  Write EKS configuration to state file (\$HOME/.faig.stat)"
+    echo "export EKS_CLUSTER_NAME=$EKS_CLUSTER_NAME"       >  $HOME/.faig.stat
+    echo "export AWS_REGION=$AWS_REGION"                   >> $HOME/.faifaig.stat
   else
     stt=$(aws eks describe-cluster --name $EKS_CLUSTER_NAME --region $AWS_REGION --query "cluster.status" --output text --no-cli-pager)
     if [ "$stt" == "ACTIVE" ]; then
@@ -370,17 +385,22 @@ installNodeGroup() {
     echo " ▪ Trying to go with gpu-ondemand-ng NodeGroups"
   fi
 
-  echo " ▪  Write EKS configuration to state file (\$HOME/.fortiaigate.stat)"
-  echo "export EKS_NODEGROUP_TYPE=$EKS_NODEGROUP_TYPE"   >> $HOME/.fortiaigate.stat
+  echo " ▪  Write EKS configuration to state file (\$HOME/.faig.stat)"
+  echo "export EKS_NODEGROUP_TYPE=$EKS_NODEGROUP_TYPE"   >> $HOME/.faig.stat
 
   nodegroups=$(aws eks list-nodegroups  --cluster-name $EKS_CLUSTER_NAME --region $AWS_REGION  --no-cli-pager | jq -r '.nodegroups[]')
   if [ "$nodegroups" == "" ]; then
     echo " ▪ Creating EKS NodeGroup type $EKS_NODEGROUP_TYPE"
-    sed -e "s/CLUSTER/$EKS_CLUSTER_NAME/g" -e "s/REGION/$AWS_REGION/g"  files/${EKS_NODEGROUP_TYPE}-template.yaml > /tmp/${EKS_NODEGROUP_TYPE}.yaml
-    eksctl create nodegroup --config-file /tmp/${EKS_NODEGROUP_TYPE}.yaml > /tmp/error.log 2>&1; ret=$?
+    sed -e "s/CLUSTER/$EKS_CLUSTER_NAME/g" \
+        -e "s/REGION/$AWS_REGION/g"  \
+        -e "s/REGION/$AWS_REGION/g"  \
+        -e "s/REGION/$AWS_REGION/g"  \
+        files/${EKS_NODEGROUP_TYPE}-template.yaml > /tmp/${EKS_NODEGROUP_TYPE}.yaml
+    eksctl create nodegroup --config-file /tmp/${EKS_NODEGROUP_TYPE}.yaml --profile "$AWS_PROFILE" > /tmp/error.log 2>&1; ret=$?
     if [ $ret -ne 0 ]; then
       logMessages /tmp/error.log
       echo "ERROR: NodeGroup creatation failed"
+      echo "      => eksctl create nodegroup --config-file /tmp/${EKS_NODEGROUP_TYPE}.yaml"
       exit 1
     fi
   else
@@ -1321,14 +1341,13 @@ testAppDNS() {
 # Function Purpose ...: Install Amazon EFS CSI driver and RWX StorageClass for EKS
 # ------------------------------------------------------------------------------------------
 # Argument ($1) ......:
-# Dependancies: ......: AWS_REGION, EKS_CLUSTER_NAME
+# Dependancies: ......: AWS_REGION, EKS_CLUSTER_NAME, EFS_STORAGE_CLASS
 # ------------------------------------------------------------------------------------------
 # Return Value .......:
 # ------------------------------------------------------------------------------------------
 installEFSstorageClass() {
 
   EFS_ADDON_NAME="aws-efs-csi-driver"
-  EFS_STORAGE_CLASS="efs-rwx"
 
   messageTitle "Amazon EFS RWX Storage for EKS Kubernetes Cluster"
 
@@ -1576,9 +1595,9 @@ EOF
     exit 1
   fi
 
-  echo " ▪  Write EFS configuration to state file (\$HOME/.fortiaigate.stat)"
-  echo "export EFS_FILE_SYSTEM_ID=$EFS_FILE_SYSTEM_ID"    >> $HOME/.fortiaigate.stat
-  echo "export EFS_SECURITY_GROUP_ID=$EFS_SECURITY_GROUP_ID" >> $HOME/.fortiaigate.stat
+  echo " ▪  Write EFS configuration to state file (\$HOME/.faig.stat)"
+  echo "export EFS_FILE_SYSTEM_ID=$EFS_FILE_SYSTEM_ID"    >> $HOME/.faig.stat
+  echo "export EFS_SECURITY_GROUP_ID=$EFS_SECURITY_GROUP_ID" >> $HOME/.faig.stat
 
   echo " ▪ EFS RWX StorageClass installed successfully"
   kubectl get storageclass "$EFS_STORAGE_CLASS"
@@ -1710,6 +1729,7 @@ deleteEKSnodeGroup() {
       --cluster $EKS_CLUSTER_NAME \
       --name $nodegroup \
       --disable-eviction \
+      --profile "$AWS_PROFILE" \
       --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
 
     if [ $ret -ne 0 ]; then
@@ -1785,11 +1805,11 @@ deleteEKScluster() {
   if [ "$cluster" == "$EKS_CLUSTER_NAME" ]; then
     echo " ▪ deleting EKS Cluster ($EKS_CLUSTER_NAME)"
   
-    eksctl delete cluster --name "$EKS_CLUSTER_NAME" --region "$AWS_REGIO" > /tmp/error.log 2>&1; ret=$?
+    eksctl delete cluster --name "$EKS_CLUSTER_NAME" --region $AWS_REGION --profile $AWS_PROFILE > /tmp/error.log 2>&1; ret=$?
     if [ $ret -ne 0 ]; then
       logMessages /tmp/error.log
       echo "ERROR: failed to delete the EKS Cluster"
-      echo "       =>  eksctl delete cluster --name $EKS_CLUSTER_NAME --region $AWS_REGIO"
+      echo "       =>  eksctl delete cluster --name $EKS_CLUSTER_NAME --region $AWS_REGION --profile $AWS_PROFILE"
       exit
     fi
   
@@ -1957,26 +1977,17 @@ repairClusterStackIfNeeded() {
 
 # ------------------------------------------------------------------------------------------
 # Function Name ......: verifyOrLoginSSO
-# Function Purpose ...: AWS SSO login
+# Function Purpose ...: Force AWS SSO login
 # ------------------------------------------------------------------------------------------
-# Argument ($1) ......: none
-# Dependancies: ......: AWS_REGION, AWS_PROFILE
+# Dependencies .......: AWS_PROFILE
 # ------------------------------------------------------------------------------------------
-# Return Value .......: none
-# ------------------------------------------------------------------------------------------a
 verifyOrLoginSSO() {
-  unset AWS_SESSION_TOKEN AWS_SECRET_ACCESS_KEY AWS_ACCESS_KEY_ID
-  PROFILE="${AWS_PROFILE:-default}"
+  unset AWS_SESSION_TOKEN AWS_SECRET_ACCESS_KEY AWS_ACCESS_KEY_ID AWS_SECURITY_TOKEN
 
-  aws sts get-caller-identity --profile "$PROFILE" >/dev/null 2>&1
-  ret=$?
+  local PROFILE="${AWS_PROFILE:-AdministratorAccess-149536468416}"
+  local ret
 
-  if [ $ret -eq 0 ]; then
-    echo "AWS SSO session already valid (profile: $PROFILE)"
-    return
-  fi
-
-  echo "AWS SSO session expired or missing — logging in..."
+  echo "Force AWS SSO login (profile: $PROFILE)"
   aws sso login --profile "$PROFILE"
   ret=$?
 
@@ -1984,21 +1995,17 @@ verifyOrLoginSSO() {
     echo "ERROR: AWS SSO login failed"
     exit 1
   fi
-}
 
-deleteClassicLoadBalancersInVpc() {
-  vpcId="$1"
+  aws sts get-caller-identity --profile "$PROFILE" >/dev/null 2>&1
+  ret=$?
 
-  aws elb describe-load-balancers \
-    --region $AWS_REGION > /tmp/elbs.json 2>/dev/null
+  if [ $ret -ne 0 ]; then
+    echo "ERROR: AWS SSO login succeeded, but STS still fails"
+    exit 1
+  fi
 
-  for lb in $(jq -r --arg vpc "$vpcId" '.LoadBalancerDescriptions[]? | select(.VPCId == $vpc) | .LoadBalancerName' /tmp/elbs.json); do
-    echo "Delete Classic Load Balancer: $lb"
-    aws elb delete-load-balancer \
-      --load-balancer-name "$lb" \
-      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
-    [ $ret -ne 0 ] && logMessages /tmp/error.log
-  done
+  export AWS_PROFILE="$PROFILE"
+  echo "AWS SSO login successful (profile: $PROFILE)"
 }
 
 deleteElbv2LoadBalancersInVpc() {
@@ -2459,6 +2466,648 @@ deleteEfsFileSystemsInVpc() {
     [ $ret -ne 0 ] && logMessages /tmp/error.log
   done
 }
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: verifyEksctlCredentials
+# Function Purpose ...: Verify Installed EKSCTL Credendtials
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: none
+# Dependancies: ......: messageLine() 
+# ------------------------------------------------------------------------------------------
+# Return Value .......: none
+# ------------------------------------------------------------------------------------------
+# ------------------------------------------------------------------------------------------
+# Function Name ......: verifyEksctlCredentials
+# Function Purpose ...: Ensure AWS SSO-backed credentials are valid for eksctl / aws / kubectl
+# ------------------------------------------------------------------------------------------
+# Dependencies .......: AWS_PROFILE, AWS_REGION
+# Return Value .......: 0 on success, 1 on failure
+# ------------------------------------------------------------------------------------------
+verifyEksctlCredentials() {
+  local PROFILE="${AWS_PROFILE:-AdministratorAccess-149536468416}"
+  local REGION="${AWS_REGION:-eu-north-1}"
+  local ret
+
+  echo " ▪ Verify AWS/eksctl credentials (profile: $PROFILE, region: $REGION)"
+
+  # ----------------------------------------------------------------------------
+  # 1) Generic credential check: can AWS CLI resolve valid credentials?
+  # ----------------------------------------------------------------------------
+  aws sts get-caller-identity --profile "$PROFILE" >/dev/null 2>/tmp/error.log
+  ret=$?
+
+  if [ $ret -eq 0 ]; then
+    export AWS_PROFILE="$PROFILE"
+    export AWS_REGION="$REGION"
+    echo " ▪ AWS/eksctl credentials are valid"
+    return 0
+  fi
+
+  echo " ▪ AWS credentials are not valid, refreshing AWS SSO session"
+
+  # ----------------------------------------------------------------------------
+  # 2) Refresh SSO session
+  # ----------------------------------------------------------------------------
+  aws sso login --profile "$PROFILE" >/tmp/error.log 2>&1
+  ret=$?
+
+  if [ $ret -ne 0 ]; then
+    cat /tmp/error.log
+    echo "ERROR: AWS SSO login failed for profile $PROFILE"
+    return 1
+  fi
+
+  # ----------------------------------------------------------------------------
+  # 3) Re-check credentials after login
+  # ----------------------------------------------------------------------------
+  aws sts get-caller-identity --profile "$PROFILE" >/dev/null 2>/tmp/error.log
+  ret=$?
+
+  if [ $ret -ne 0 ]; then
+    cat /tmp/error.log
+    echo "ERROR: AWS credentials are still invalid after SSO refresh"
+    return 1
+  fi
+
+  # ----------------------------------------------------------------------------
+  # 4) Optional EKS-specific sanity check for the target region
+  # ----------------------------------------------------------------------------
+  aws eks list-clusters --region "$REGION" --profile "$PROFILE" >/dev/null 2>/tmp/error.log
+  ret=$?
+
+  if [ $ret -ne 0 ]; then
+    cat /tmp/error.log
+    echo "ERROR: AWS credentials are valid, but EKS access failed in region $REGION"
+    return 1
+  fi
+
+  export AWS_PROFILE="$PROFILE"
+  export AWS_REGION="$REGION"
+
+  echo " ▪ AWS SSO session refreshed successfully"
+  echo " ▪ eksctl credentials are valid"
+  return 0
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: installFAIGchart
+# Function Purpose ...: Verify Installed CLI Utilities for Mac
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: none
+# Dependancies: ......: messageLine()
+# ------------------------------------------------------------------------------------------
+# Return Value .......: none
+# ------------------------------------------------------------------------------------------
+installFAIGchart() {
+  # Environment Variables
+  AWS_ACCOUNT_ID=$(aws sts get-caller-identity | jq -r '.Account')
+  ECR_FORTIAIGATE_REPOSITORY="${AWS_ACCOUNT_ID}.dkr.ecr.${ECR_REGION}.amazonaws.com/fortiaigate"
+  STAGEDIR=/tmp/faig_$ECR_FORTIAIGATE_TAG
+
+  # Cleanup from previous Build
+  [ -d $STAGEDIR ] && rm -rf $STAGEDIR; mkdir $STAGEDIR
+
+  # ----------------------------------------------------------------------------------------
+  # Unpack Helm Chart
+  # ----------------------------------------------------------------------------------------
+  CHARTFILE=$(ls -1 $ECR_FORTIAIGATE_SOURCE_DIR/FAIG_helm_chart*.tar)
+
+  if [ -f "$CHARTFILE" ]; then 
+    tar xf $CHARTFILE -C $STAGEDIR
+  else
+    echo "ERROR: Helm Chart file ($CHARTFILE) not found"
+    exit 1
+  fi
+
+  # ----------------------------------------------------------------------------------------
+  # 12.7 Fix 7: License Validation Bug (build0004)
+  # https://github.com/asameli-ftnt/fortiaigate-doc?tab=readme-ov-file#128-fix-8-triton-hardcoded-image-tags-build0012
+  # ----------------------------------------------------------------------------------------
+  sed -i '' 's+triton-models:[0-9].*$+triton-models:{{ .Values.fortiaigate.image.tag }}+g' $STAGEDIR/fortiaigate/templates/triton-server.yaml
+  sed -i '' 's+custom-triton:[0-9].*$+custom-triton:{{ .Values.fortiaigate.image.tag }}+g' $STAGEDIR/fortiaigate/templates/triton-server.yaml
+
+  # ----------------------------------------------------------------------------------------
+  # 12.2 Fix 2: Triton GPU Node Affinity
+  # ----------------------------------------------------------------------------------------
+  TEMPLATEFILE=$STAGEDIR/fortiaigate/templates/triton-server
+  awk '
+  /^[[:space:]]*nodeSelectorTerms:[[:space:]]*$/ {
+    print
+    print "              - matchExpressions:"
+    print "                  - key: eks.amazonaws.com/nodegroup"
+    print "                    operator: In"
+    print "                    values:"
+    print "                      - gpu-ng"
+    print "                      - gpu-spot-ng"
+    next
+  }
+  { print }
+  ' ${TEMPLATEFILE}.yaml > ${TEMPLATEFILE}.yaml.tmp && mv ${TEMPLATEFILE}.yaml.tmp ${TEMPLATEFILE}.yaml
+
+
+  # ----------------------------------------------------------------------------------------
+  # Copy Licenses files to the chart directory
+  # ----------------------------------------------------------------------------------------
+  cp -r $FAID_LICENSE_DIR/* $STAGEDIR/fortiaigate/files/licenses/
+
+  # ----------------------------------------------------------------------------------------
+  # Make license mapping on the NodeGroup nodes
+  # ----------------------------------------------------------------------------------------
+  FAIG_LICENSES=()
+
+  for f in "$HOME"/.faig/licenses/*.lic; do
+    [ -e "$f" ] || continue
+    FAIG_LICENSES+=("$(basename "$f")")
+  done
+
+  nodes=$(kubectl get nodes -L eks.amazonaws.com/nodegroup -o json | jq -r '.items[].metadata.name')
+
+  i=0;
+  echo "  licenses:" > /tmp/values-licenses.yaml
+  for node in ${nodes}; do
+    lic=${FAIG_LICENSES[$i]}
+
+    echo "    \"$node\":  \"files/licenses/$lic\"" >> /tmp/values-licenses.yaml
+    let i=i+1
+  done
+
+  #ECR_FORTIAIGATE_REPOSITORY="${AWS_ACCOUNT_ID}.dkr.ecr.${ECR_REGION}.amazonaws.com/fortiaigate"
+
+  sed -e "s+XXX_REPONAME_XXX+$ECR_FORTIAIGATE_REPOSITORY+g" \
+      -e "s/XXXEFSSCXXX/$EFS_STORAGE_CLASS/g" \
+      -e "s/XXX_REPOTAG_XXX/$ECR_FORTIAIGATE_TAG/g" \
+      -e '/^XXXLICENSESXXX$/{r /tmp/values-licenses.yaml' -e ';d;}' cfg/values-template.yaml > /tmp/values.yaml
+
+  echo "helm install fortiaigate ${STAGEDIR}/fortiaigate -n fortiaigate -f /tmp/values.yaml --create-namespace"
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: deleteImagebyTag
+# Function Purpose ...: Delete ECR Repository Images by Tag
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: TAG ie. build0015
+# Dependancies: ......: messageLine()
+# ------------------------------------------------------------------------------------------
+# Return Value .......: none
+# ------------------------------------------------------------------------------------------
+deleteImagebyTag() {
+  local TAG="$1"
+  local REGION="${ECR_REGION:-$AWS_REGION}"
+
+  for repo in $(aws ecr describe-repositories \
+    --region "$REGION" \
+    --query 'repositories[].repositoryName' \
+    --output text); do
+
+    local image_ids
+    if [ -n "$TAG" ]; then
+      image_ids=$(aws ecr list-images \
+        --region "$REGION" \
+        --repository-name "$repo" \
+        --filter tagStatus=TAGGED \
+        --query "imageIds[?imageTag=='$TAG']" \
+        --output json)
+    else
+      image_ids=$(aws ecr list-images \
+        --region "$REGION" \
+        --repository-name "$repo" \
+        --filter tagStatus=ANY \
+        --query 'imageIds' \
+        --output json)
+    fi
+
+    [ "$image_ids" = "[]" ] && continue
+
+    local tmpfile
+    tmpfile=$(mktemp)
+
+    printf '%s\n' "$image_ids" > "$tmpfile"
+
+    aws ecr batch-delete-image \
+      --region "$REGION" \
+      --repository-name "$repo" \
+      --image-ids "file://$tmpfile" \
+      --output json \
+    | awk -v repo="$repo" '
+        /"imageTag":/ {
+          gsub(/[",]/, "", $2)
+          print " ▪ Images in repistory: " repo ":" $2 " deleted"
+        }
+      '
+
+    rm -f "$tmpfile"
+  done
+}
+
+
+getImageTags() {
+  for repo in $(aws ecr describe-repositories \
+    --region eu-north-1 \
+    --query 'repositories[].repositoryName' \
+    --output text); do
+  
+    aws ecr describe-images \
+      --region eu-north-1 \
+      --repository-name "$repo" \
+      --query 'imageDetails[].imageTags[]' \
+      --output text 2>/dev/null | tr '\t' '\n' | sort -u
+  done
+
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: installNVIDIAdevicePlugin
+# Function Purpose ...: Install NVIDIA Device Plugin
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: TAG ie. build0015
+# Dependancies: ......: messageLine()
+# ------------------------------------------------------------------------------------------
+# Return Value .......: none
+# ------------------------------------------------------------------------------------------
+installNVIDIAdevicePlugin() {
+  echo " ▪ Install NVIDIA Device Plugin"
+  kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.17.0/deployments/static/nvidia-device-plugin.yml > /dev/null 2>&1; ret=$?
+
+  echo "   ---------------------------------------------------------------------------------------------------------------------"
+  kubectl get nodes -o custom-columns=NAME:.metadata.name,GPU:.status.allocatable.'nvidia\.com/gpu' | sed 's/^/   /g'
+  echo "   ---------------------------------------------------------------------------------------------------------------------"
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: installStorageClassGP3
+# Function Purpose ...: Install GP3 Storage Class
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: 
+# Dependancies: ......: 
+# ------------------------------------------------------------------------------------------
+# Return Value .......: none
+# ------------------------------------------------------------------------------------------
+installStorageClassGP3() {
+  echo " ▪ Install GP3 Storage Class"
+
+  kubectl apply -f files/gp3-sc.yaml > /dev/null 2>&1; ret=$?
+
+  echo "   ---------------------------------------------------------------------------------------------------------------------" 
+  kubectl get storageclass | sed 's/^/   /g'
+  echo "   ---------------------------------------------------------------------------------------------------------------------" 
+
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: prepareEFSinfrastructure
+# Function Purpose ...: Create / reuse EFS filesystem, security group and mount targets
+# ------------------------------------------------------------------------------------------
+# Dependencies .......: AWS_REGION, EKS_CLUSTER_NAME, AWS_PROFILE
+# Optional Vars ......: EFS_NAME, EFS_SG_NAME
+# Outputs ............: EFS_FILE_SYSTEM_ID, EFS_SECURITY_GROUP_ID
+# ------------------------------------------------------------------------------------------
+prepareEFSinfrastructure() {
+
+  local EFS_NAME="${EFS_NAME:-efs-$EKS_CLUSTER_NAME}"
+  local EFS_SG_NAME="${EFS_SG_NAME:-efs-$EKS_CLUSTER_NAME-sg}"
+  local VPC_ID=""
+  local SUBNET_IDS=""
+  local subnet=""
+  local subnetAzId=""
+  local MT_ID=""
+  local ret=0
+
+  messageTitle "Prepare Amazon EFS Infrastructure"
+
+  [ -z "$AWS_REGION" ]       && { echo "ERROR: AWS_REGION is not set"; exit 1; }
+  [ -z "$EKS_CLUSTER_NAME" ] && { echo "ERROR: EKS_CLUSTER_NAME is not set"; exit 1; }
+
+  # ------------------------------------------------------------------------
+  # Get cluster VPC + subnets
+  # ------------------------------------------------------------------------
+  VPC_ID=$(aws eks describe-cluster \
+    --name "$EKS_CLUSTER_NAME" \
+    --region "$AWS_REGION" \
+    --query 'cluster.resourcesVpcConfig.vpcId' \
+    --output text 2>/tmp/error.log); ret=$?
+
+  if [ $ret -ne 0 ] || [ -z "$VPC_ID" ] || [ "$VPC_ID" = "None" ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to get VPC ID for cluster $EKS_CLUSTER_NAME"
+    exit 1
+  fi
+
+  SUBNET_IDS=$(aws eks describe-cluster \
+    --name "$EKS_CLUSTER_NAME" \
+    --region "$AWS_REGION" \
+    --query 'cluster.resourcesVpcConfig.subnetIds' \
+    --output text 2>/tmp/error.log); ret=$?
+
+  if [ $ret -ne 0 ] || [ -z "$SUBNET_IDS" ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to get subnet IDs for cluster $EKS_CLUSTER_NAME"
+    exit 1
+  fi
+
+  echo " ▪ VPC_ID ...............: $VPC_ID"
+  echo " ▪ SUBNET_IDS ...........: $SUBNET_IDS"
+
+  # ------------------------------------------------------------------------
+  # Create / reuse EFS filesystem
+  # ------------------------------------------------------------------------
+  EFS_FILE_SYSTEM_ID=$(aws efs describe-file-systems \
+    --region "$AWS_REGION" \
+    --query "FileSystems[?Name=='$EFS_NAME'].FileSystemId | [0]" \
+    --output text 2>/tmp/error.log); ret=$?
+
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to query EFS file systems"
+    exit 1
+  fi
+
+  if [ -z "$EFS_FILE_SYSTEM_ID" ] || [ "$EFS_FILE_SYSTEM_ID" = "None" ]; then
+    echo " ▪ Create EFS filesystem : $EFS_NAME"
+
+    EFS_FILE_SYSTEM_ID=$(aws efs create-file-system \
+      --creation-token "$EFS_NAME" \
+      --performance-mode generalPurpose \
+      --encrypted \
+      --tags Key=Name,Value="$EFS_NAME" \
+      --region "$AWS_REGION" \
+      --query 'FileSystemId' \
+      --output text 2>/tmp/error.log); ret=$?
+
+    if [ $ret -ne 0 ] || [ -z "$EFS_FILE_SYSTEM_ID" ] || [ "$EFS_FILE_SYSTEM_ID" = "None" ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to create EFS filesystem"
+      exit 1
+    fi
+  else
+    echo " ▪ EFS filesystem exists : $EFS_FILE_SYSTEM_ID"
+  fi
+
+  # ------------------------------------------------------------------------
+  # Create / reuse EFS security group
+  # ------------------------------------------------------------------------
+  EFS_SECURITY_GROUP_ID=$(aws ec2 describe-security-groups \
+    --filters Name=vpc-id,Values="$VPC_ID" Name=group-name,Values="$EFS_SG_NAME" \
+    --region "$AWS_REGION" \
+    --query 'SecurityGroups[0].GroupId' \
+    --output text 2>/tmp/error.log); ret=$?
+
+  if [ -z "$EFS_SECURITY_GROUP_ID" ] || [ "$EFS_SECURITY_GROUP_ID" = "None" ]; then
+    echo " ▪ Create EFS SG ........: $EFS_SG_NAME"
+
+    EFS_SECURITY_GROUP_ID=$(aws ec2 create-security-group \
+      --group-name "$EFS_SG_NAME" \
+      --description "EFS Security Group for $EKS_CLUSTER_NAME" \
+      --vpc-id "$VPC_ID" \
+      --region "$AWS_REGION" \
+      --query 'GroupId' \
+      --output text 2>/tmp/error.log); ret=$?
+
+    if [ $ret -ne 0 ] || [ -z "$EFS_SECURITY_GROUP_ID" ] || [ "$EFS_SECURITY_GROUP_ID" = "None" ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to create EFS security group"
+      exit 1
+    fi
+
+    aws ec2 authorize-security-group-ingress \
+      --group-id "$EFS_SECURITY_GROUP_ID" \
+      --protocol tcp \
+      --port 2049 \
+      --cidr 0.0.0.0/0 \
+      --region "$AWS_REGION" > /tmp/error.log 2>&1; ret=$?
+
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to authorize EFS security group ingress"
+      exit 1
+    fi
+  else
+    echo " ▪ EFS SG exists ........: $EFS_SECURITY_GROUP_ID"
+  fi
+
+  # ------------------------------------------------------------------------
+  # Create mount target per AZ
+  # ------------------------------------------------------------------------
+  for subnet in $SUBNET_IDS; do
+    subnetAzId=$(aws ec2 describe-subnets \
+      --subnet-ids "$subnet" \
+      --region "$AWS_REGION" \
+      --query 'Subnets[0].AvailabilityZoneId' \
+      --output text 2>/tmp/error.log); ret=$?
+
+    if [ $ret -ne 0 ] || [ -z "$subnetAzId" ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to get AZ ID for subnet $subnet"
+      exit 1
+    fi
+
+    MT_ID=$(aws efs describe-mount-targets \
+      --file-system-id "$EFS_FILE_SYSTEM_ID" \
+      --region "$AWS_REGION" \
+      --query "MountTargets[?AvailabilityZoneId=='$subnetAzId'].MountTargetId | [0]" \
+      --output text 2>/tmp/error.log); ret=$?
+
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to query mount targets"
+      exit 1
+    fi
+
+    if [ -z "$MT_ID" ] || [ "$MT_ID" = "None" ]; then
+      echo " ▪ Create mount target ..: $subnet ($subnetAzId)"
+
+      aws efs create-mount-target \
+        --file-system-id "$EFS_FILE_SYSTEM_ID" \
+        --subnet-id "$subnet" \
+        --security-groups "$EFS_SECURITY_GROUP_ID" \
+        --region "$AWS_REGION" > /tmp/error.log 2>&1; ret=$?
+
+      if [ $ret -ne 0 ]; then
+        logMessages /tmp/error.log
+        echo "ERROR: Failed to create mount target for subnet $subnet"
+        exit 1
+      fi
+    else
+      echo " ▪ Mount target exists ..: $subnet ($subnetAzId)"
+    fi
+  done
+
+  {
+    grep -v '^export EFS_FILE_SYSTEM_ID=' "$HOME/.faig.stat" 2>/dev/null | \
+    grep -v '^export EFS_SECURITY_GROUP_ID='
+    echo "export EFS_FILE_SYSTEM_ID=$EFS_FILE_SYSTEM_ID"
+    echo "export EFS_SECURITY_GROUP_ID=$EFS_SECURITY_GROUP_ID"
+  } > /tmp/faig.stat.$$ && mv /tmp/faig.stat.$$ "$HOME/.faig.stat"
+
+  echo " ▪ EFS_FILE_SYSTEM_ID ...: $EFS_FILE_SYSTEM_ID"
+  echo " ▪ EFS_SECURITY_GROUP_ID : $EFS_SECURITY_GROUP_ID"
+}
+
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: installEFSCSIDriver
+# Function Purpose ...: Install / upgrade AWS EFS CSI driver with IAM service account
+# ------------------------------------------------------------------------------------------
+# Dependencies .......: AWS_REGION, EKS_CLUSTER_NAME, AWS_PROFILE
+# Optional Vars ......: EFS_CSI_NAMESPACE, EFS_CSI_SA_NAME, EFS_CSI_RELEASE
+# ------------------------------------------------------------------------------------------
+installEFSCSIDriver() {
+  local EFS_CSI_DEPLOYMENT="${EFS_CSI_DEPLOYMENT:-efs-csi-controller}"
+  local EFS_CSI_NAMESPACE="${EFS_CSI_NAMESPACE:-kube-system}"
+  local EFS_CSI_SA_NAME="${EFS_CSI_SA_NAME:-efs-csi-controller-sa}"
+  local EFS_CSI_RELEASE="${EFS_CSI_RELEASE:-aws-efs-csi-driver}"
+  local EFS_POLICY_ARN="arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy"
+  local ROLE_ARN=""
+  local ret=0
+
+  messageTitle "Install Amazon EFS CSI Driver"
+
+  [ -z "$AWS_REGION" ]       && { echo "ERROR: AWS_REGION is not set"; exit 1; }
+  [ -z "$EKS_CLUSTER_NAME" ] && { echo "ERROR: EKS_CLUSTER_NAME is not set"; exit 1; }
+  [ -z "$AWS_PROFILE" ]      && { echo "ERROR: AWS_PROFILE is not set"; exit 1; }
+
+  ROLE_ARN=$(kubectl get sa "$EFS_CSI_SA_NAME" -n "$EFS_CSI_NAMESPACE" \
+    -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}' 2>/dev/null)
+
+  if [ -z "$ROLE_ARN" ]; then
+    echo " ▪ Create / update IAM SA : $EFS_CSI_SA_NAME"
+
+    eksctl create iamserviceaccount \
+      --cluster "$EKS_CLUSTER_NAME" \
+      --namespace "$EFS_CSI_NAMESPACE" \
+      --name "$EFS_CSI_SA_NAME" \
+      --attach-policy-arn "$EFS_POLICY_ARN" \
+      --approve \
+      --region "$AWS_REGION" \
+      --profile "$AWS_PROFILE" \
+      --override-existing-serviceaccounts > /tmp/error.log 2>&1; ret=$?
+
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to create/update IAM service account for EFS CSI driver"
+      exit 1
+    fi
+
+    ROLE_ARN=$(kubectl get sa "$EFS_CSI_SA_NAME" -n "$EFS_CSI_NAMESPACE" \
+      -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}' 2>/dev/null)
+
+    if [ -z "$ROLE_ARN" ]; then
+      echo "ERROR: EFS CSI service account has no role annotation"
+      exit 1
+    fi
+  else
+    echo " ▪ IAM SA exists ........: $EFS_CSI_SA_NAME"
+  fi
+
+  echo " ▪ EFS CSI role ARN .....: $ROLE_ARN"
+
+  helm repo add aws-efs-csi-driver https://kubernetes-sigs.github.io/aws-efs-csi-driver/ \
+    >/tmp/error.log 2>&1 || true
+  helm repo update >/tmp/error.log 2>&1; ret=$?
+
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to update Helm repositories"
+    exit 1
+  fi
+
+  echo " ▪ Install / upgrade ....: $EFS_CSI_RELEASE"
+  helm upgrade --install "$EFS_CSI_RELEASE" aws-efs-csi-driver/aws-efs-csi-driver \
+    -n "$EFS_CSI_NAMESPACE" \
+    --set controller.serviceAccount.create=false \
+    --set controller.serviceAccount.name="$EFS_CSI_SA_NAME" > /tmp/error.log 2>&1; ret=$?
+
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to install/upgrade EFS CSI driver"
+    exit 1
+  fi
+
+  kubectl rollout status deployment/efs-csi-controller \
+    -n "$EFS_CSI_NAMESPACE" --timeout=180s > /tmp/error.log 2>&1; ret=$?
+
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: EFS CSI driver rollout failed"
+    exit 1
+  fi
+
+  echo " ▪ EFS CSI driver ready"
+}
+
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: installEFSstorageClass
+# Function Purpose ...: Create / update EFS StorageClass (shared or FortiAIGate dedicated)
+# ------------------------------------------------------------------------------------------
+# Dependencies .......: EFS_FILE_SYSTEM_ID, EFS_STORAGE_CLASS
+# Optional Vars ......: EFS_MODE=[shared|faig]
+# ------------------------------------------------------------------------------------------
+installEFSstorageClass() {
+
+  local EFS_MODE="${EFS_MODE:-faig}"
+  local ret=0
+
+  messageTitle "Install Amazon EFS StorageClass"
+
+  [ -z "$EFS_FILE_SYSTEM_ID" ] && { echo "ERROR: EFS_FILE_SYSTEM_ID is not set"; exit 1; }
+  [ -z "$EFS_STORAGE_CLASS" ]  && { echo "ERROR: EFS_STORAGE_CLASS is not set"; exit 1; }
+
+  case "$EFS_MODE" in
+    shared)
+      cat > /tmp/efs-storageclass.yaml <<EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: $EFS_STORAGE_CLASS
+provisioner: efs.csi.aws.com
+parameters:
+  provisioningMode: efs-ap
+  fileSystemId: $EFS_FILE_SYSTEM_ID
+  directoryPerms: "700"
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+EOF
+      ;;
+    faig)
+      cat > /tmp/efs-storageclass.yaml <<EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: $EFS_STORAGE_CLASS
+provisioner: efs.csi.aws.com
+parameters:
+  provisioningMode: efs-ap
+  fileSystemId: $EFS_FILE_SYSTEM_ID
+  basePath: "/fortiaigate"
+  directoryPerms: "770"
+  uid: "1001"
+  gid: "1001"
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+EOF
+      ;;
+    *)
+      echo "ERROR: Unsupported EFS_MODE '$EFS_MODE' (expected: shared or faig)"
+      exit 1
+      ;;
+  esac
+
+  echo " ▪ Apply StorageClass ....: $EFS_STORAGE_CLASS ($EFS_MODE)"
+  kubectl apply -f /tmp/efs-storageclass.yaml > /tmp/error.log 2>&1; ret=$?
+
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to apply EFS StorageClass"
+    exit 1
+  fi
+
+  kubectl get storageclass "$EFS_STORAGE_CLASS"
+}
+
+
+
+
+
 
 
 
