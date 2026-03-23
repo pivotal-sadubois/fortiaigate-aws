@@ -22,70 +22,126 @@ DEBUG=0
 # Return Value .......: none
 # ------------------------------------------------------------------------------------------
 checkLocalConfig() {
-  if [ -f $HOME/.faig.cfg ]; then 
-    . $HOME/.faig.cfg
+  local missing_variables=0
+  [ ! -d $HOME/.faig ] && mkdir -p $HOME/.faig
+  [ -f $HOME/.faig/config ] && . $HOME/.faig/config
 
-  # Make sure AWS Access credentials are set
-  if [ -z "$AWS_PROFILE" ]; then
-    echo "ERROR: AWS Access Credentials are not set in (\$HOME/.faig.cfg), please set them as follows: "
-    echo '       export AWS_PROFILE="profile-name"'
+  # Set Default Variables
+  [ -z "$ECR_STAGEDIR" ] && ECR_STAGEDIR=/tmp/faig_$ECR_FORTIAIGATE_TAG
+  [ -z "$FAIG_LICENSE_DIR" ] && FAIG_LICENSE_DIR=$HOME/.faig/licenses
+  [ -z "$EKS_ODMD_NG_NODES" ] && EKS_ODMD_NG_NODES=1
+  [ -z "$EKS_SPOT_NG_NODES" ] && EKS_SPOT_NG_NODES=1
+
+  if [ -z "$EKS_CLUSTER_NAME" -o -z "$AWS_PROFILE" -o -z "$AWS_REGION" -o -z "$ROUT53_DOMAIN" -o -z "$FAIG_LICENSE_DIR" -o -z "$ECR_FORTIAIGATE_TAG" -o \
+       -z "$ECR_FORTIAIGATE_SOURCE_DIR" -o -z "$ECR_REGION" ]; then
+    missing_variables=1
+    echo ""
+    echo "  MISSING ENVIRONMENT-VARIABES          DESCRIPTION        "
+    echo "  -------------------------------------------------------------------------------------------------------------------------------------------------------"
+
+    if [ "${EKS_CLUSTER_NAME}" == "" ]; then
+      echo "  EKS_CLUSTER_NAME                      (required) EKS Cluster Name"
+      echo "                                                   => ie. eks-genai-fortiaigate"
+    fi
+
+    if [ "${AWS_PROFILE}" == "" ]; then
+      echo "  AWS_PROFILE                           (required) AWS IAM Profile"
+      echo "                                                   => ie. AdministratorAccess-149536468416"
+    fi
+
+    if [ "${AWS_REGION}" == "" ]; then
+      echo "  AWS_REGION                            (required) AWS Region with Spot Instances"
+      echo "                                                   => ie. eu-north-1"
+    fi
+
+    if [ "${ECR_FORTIAIGATE_TAG}" == "" ]; then
+      echo "  ECR_FORTIAIGATE_TAG                   (required) FortiAIgate Repository Tag"
+      echo "                                                   => ie. build0020"
+    fi
+
+    if [ "${ECR_FORTIAIGATE_SOURCE_DIR}" == "" ]; then
+      echo "  ECR_FORTIAIGATE_SOURCE_DIR            (required) AWS Region with Spot Instances"
+      echo "                                                   => default: \$HOME/Downloads/FAIG/$ECR_FORTIAIGATE_TAG"
+    fi
+
+    if [ "${ECR_REGION}" == "" ]; then
+      echo "  ECR_REGION                            (required) AWS Region for ECR Repository"
+      echo "                                                   => ie. eu-north-1"
+    fi
+  fi
+
+  if [ "$ROUT53_DNS_UPDATES" == "true" -o "$ROUT53_DNS_UPDATES" == "True" -o "$ROUT53_DNS_UPDATES" == "TRUE" ]; then 
+    if [ -z "$ROUT53_SEPERATE_ACCOUNT" -o -z "$ROUT53_HOSTED_ZONE_ID" -o -z "$ROUT53_DOMAIN" -o -z "$ROUT53_REGION" ]; then
+      local missing_variables=1
+      echo ""
+      echo "  MISSING ENVIRONMENT-VARIABES          DESCRIPTION        "
+      echo "  -------------------------------------------------------------------------------------------------------------------------------------------------------"
+    
+      if [ -z "${ROUT53_HOSTED_ZONE_ID}" ]; then
+        echo "  ROUT53_HOSTED_ZONE_ID                 (required) AWS Route54 ZoneID"
+      fi
+
+      if [ -z "${ROUT53_DOMAIN}" ]; then
+        echo "  ROUT53_DOMAIN                         (required) AWS Domain Name"
+        echo "                                                   => ie. fortiaigate.fortidemo.ch"
+      fi
+
+      if [ -z "${ROUT53_REGION}" ]; then
+        echo "  ROUT53_REGION                         (required) AWS Route53 Region"
+        echo "                                                   => ie. eu-north-1"
+      fi
+    fi
+  fi
+
+  if [ "$ROUT53_SEPERATE_ACCOUNT" == "true" -o "$ROUT53_SEPERATE_ACCOUNT" == "True" -o "$ROUT53_SEPERATE_ACCOUNT" == "TRUE" ]; then
+    if [ -z "$ROUT53_ACCESS_KEY_ID" -o -z "$ROUT53_SECRET_ACCESS_KEY" ]; then 
+      local missing_variables=1
+      echo ""
+      echo "  MISSING ENVIRONMENT-VARIABES          DESCRIPTION        "
+      echo "  -------------------------------------------------------------------------------------------------------------------------------------------------------"
+    
+      if [ -z "${ROUT53_ACCESS_KEY_ID}" ]; then
+        echo "  ROUT53_ACCESS_KEY_ID                  (required) AWS Access Key"
+        echo "  ROUT53_SECRET_ACCESS_KEY              (required) AWS Secret Access Key"
+      fi
+    fi
+  fi
+
+  if [ ! -f $HOME/.faig/config ]; then
+    echo "export AWS_REGION=\"\""                              >  $HOME/.faig/config
+    echo "EKS_CLUSTER_NAME=\"\""                               >> $HOME/.faig/config
+    echo "EKS_ODMD_NG_NODES=1\"\""                             >> $HOME/.faig/config
+    echo "EKS_SPOT_NG_NODES=3\"\""                             >> $HOME/.faig/config
+    echo ""                                                    >> $HOME/.faig/config
+    echo "# AWS Access Credentials"                            >> $HOME/.faig/config
+    echo "AWS_PROFILE=\"\""                                    >> $HOME/.faig/config
+    echo ""                                                    >> $HOME/.faig/config
+    echo "# AWS Rout54 Access Credentials"                     >> $HOME/.faig/config
+    echo "ROUT53_DNS_UPDATES=\"false\""                        >> $HOME/.faig/config
+    echo "ROUT53_REGION=\"\""                                  >> $HOME/.faig/config
+    echo "ROUT53_ACCESS_KEY_ID=\"\""                           >> $HOME/.faig/config
+    echo "ROUT53_SEPERATE_ACCOUNT=\"false\""                   >> $HOME/.faig/config
+    echo "ROUT53_SECRET_ACCESS_KEY=\"\""                       >> $HOME/.faig/config
+    echo "ROUT53_HOSTED_ZONE_ID=\"\""                          >> $HOME/.faig/config
+    echo "ROUT53_DOMAIN=\"\""                                  >> $HOME/.faig/config
+    echo ""                                                    >> $HOME/.faig/config
+    echo "# FortiAiGate (FAIG) Configuration"                  >> $HOME/.faig/config
+    echo "FAIG_LICENSE_DIR=\"\$HOME/.faid/licenses\""          >> $HOME/.faig/config
+    echo ""                                                    >> $HOME/.faig/config
+    echo "# AWS RCR Repository Configuration"                  >> $HOME/.faig/config
+    echo "ECR_FORTIAIGATE_SOURCE_DIR=\"\""                     >> $HOME/.faig/config
+    echo "ECR_FORTIAIGATE_TAG=\"\""                            >> $HOME/.faig/config
+    echo "ECR_REGION=\"\""                                     >> $HOME/.faig/config
+    echo "ECR_STAGEDIR=\"/tmp/faig_$ECR_FORTIAIGATE_TAG\""     >> $HOME/.faig/config
+  fi
+
+  if [ ${missing_variables} -eq 1 ]; then
+    echo "  -------------------------------------------------------------------------------------------------------------------------------------------------------"
+    echo "  IMPORTANT: Please set the missing environment variables in the configuration file \$HOME/.faig/config"
+    echo "  -------------------------------------------------------------------------------------------------------------------------------------------------------"
     exit 1
-  fi
-
-  if [ -z "$AWS_REGION" ]; then 
-    echo "ERROR: AWS Region is not configured in (\$HOME/.faig.cfg), please set them as follows: "
-    echo '       export AWS_REGION=eu-north-1'
-    exit 1
-  fi
-
-  if [ -z "$EKS_CLUSTER_NAME" ]; then 
-    echo "ERROR: AWS Region is not configured in (\$HOME/.faig.cfg), please set them as follows: "
-    echo '       export EKS_CLUSTER_NAME=\"eks-genai-fortiaigate\"'
-    exit 1
-  fi
-
-  if [ -z "$ROUT53_DOMAIN" ]; then 
-    echo "ERROR: AWS Region is not configured in (\$HOME/.faig.cfg), please set them as follows: "
-    echo '       export ROUT53_DOMAIN=\"fortiaigate.fortidemo.ch\"'
-    exit 1
-  fi
-
-  if [ -z "$FAID_LICENSE_DIR" ]; then 
-    echo "ERROR: AWS Region is not configured in (\$HOME/.faig.cfg), please set them as follows: "
-    echo '       export ROUT53_DOMAIN=\"fortiaigate.fortidemo.ch\"'
-    exit 1
-  fi
-
-  else
-    echo "ERROR: FortiAIgate Deployment Configu (\$HOME/.faig.cfg) not set"
-    echo "       Please fill out the required parameters in the file"
-
-    echo "export AWS_REGION=\"\""                       >  $HOME/.faig.cfg
-    echo "EKS_CLUSTER_NAME=\"\""                        >> $HOME/.faig.cfg
-    echo "EKS_ODMD_NG_NODES=1\"\""                      >> $HOME/.faig.cfg
-    echo "EKS_SPOT_NG_NODES=3\"\""                      >> $HOME/.faig.cfg
-    echo ""                                             >> $HOME/.faig.cfg
-    echo "# AWS Access Credentials"                     >> $HOME/.faig.cfg
-    echo "AWS_PROFILE=\"\""                             >> $HOME/.faig.cfg
-    echo ""                                             >> $HOME/.faig.cfg
-    echo "# AWS Rout54 Access Credentials"              >> $HOME/.faig.cfg
-    echo "ROUT53_DNS_UPDATES=\"false\""                 >> $HOME/.faig.cfg
-    echo "ROUT53_REGION=\"\""                           >> $HOME/.faig.cfg
-    echo "ROUT53_ACCESS_KEY_ID=\"\""                    >> $HOME/.faig.cfg
-    echo "ROUT53_SECRET_ACCESS_KEY=\"\""                >> $HOME/.faig.cfg
-    echo "ROUT53_HOSTED_ZONE_ID=\"\""                   >> $HOME/.faig.cfg
-    echo "ROUT53_DOMAIN=\"\""                           >> $HOME/.faig.cfg
-    echo ""                                             >> $HOME/.faig.cfg
-    echo "# FortiAiGate (FAIG) Configuration"           >> $HOME/.faig.cfg
-    echo "FAID_LICENSE_DIR=\"\$HOME/.faid/licenses\""   >> $HOME/.faig.cfg
-    echo ""                                             >> $HOME/.faig.cfg
-    echo "# AWS RCR Repository Configuration"           >> $HOME/.faig.cfg
-    echo "ECR_FORTIAIGATE_SOURCE_DIR=\"\""              >> $HOME/.faig.cfg
-    echo "ECR_FORTIAIGATE_TAG=\"\""                     >> $HOME/.faig.cfg
-    echo "ECR_REGION=\"\""                              >> $HOME/.faig.cfg
-  fi
+  fi 
 } 
-
 
 # ------------------------------------------------------------------------------------------
 # Function Name ......: logMessages
@@ -347,9 +403,9 @@ installEKSCluster() {
     echo " ▪ Update Kubeconfig for the EKS Cluster"
     aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_REGION > /dev/null 2>&1
 
-    echo " ▪  Write EKS configuration to state file (\$HOME/.faig.stat)"
-    echo "export EKS_CLUSTER_NAME=$EKS_CLUSTER_NAME"       >  $HOME/.faig.stat
-    echo "export AWS_REGION=$AWS_REGION"                   >> $HOME/.faifaig.stat
+    echo " ▪  Write EKS configuration to state file (\$HOME/.faig/depliy.stat)"
+    echo "export EKS_CLUSTER_NAME=$EKS_CLUSTER_NAME"       >  $HOME/.faig/deploy.stat
+    echo "export AWS_REGION=$AWS_REGION"                   >> $HOME/.faig/deploy.stat
   else
     stt=$(aws eks describe-cluster --name $EKS_CLUSTER_NAME --region $AWS_REGION --query "cluster.status" --output text --no-cli-pager)
     if [ "$stt" == "ACTIVE" ]; then
@@ -385,8 +441,8 @@ installNodeGroup() {
     echo " ▪ Trying to go with gpu-ondemand-ng NodeGroups"
   fi
 
-  echo " ▪  Write EKS configuration to state file (\$HOME/.faig.stat)"
-  echo "export EKS_NODEGROUP_TYPE=$EKS_NODEGROUP_TYPE"   >> $HOME/.faig.stat
+  echo " ▪  Write EKS configuration to state file (\$HOME/.faig/deploy.stat)"
+  echo "export EKS_NODEGROUP_TYPE=$EKS_NODEGROUP_TYPE"   >> $HOME/.faig/deploy.stat
 
   nodegroups=$(aws eks list-nodegroups  --cluster-name $EKS_CLUSTER_NAME --region $AWS_REGION  --no-cli-pager | jq -r '.nodegroups[]')
   if [ "$nodegroups" == "" ]; then
@@ -858,8 +914,8 @@ installIngressCertificate() {
 
   HOSTED_ZONE_ID="$1"
   ALB_REGION="$AWS_REGION"
-  CERT_DOMAIN="*.fortiaigate.fortidemo.ch"
-  CERT_SAN="fortiaigate.fortidemo.ch"
+  CERT_DOMAIN="*.$ROUT53_DOMAIN"
+  CERT_SAN="$ROUT53_DOMAIN"
 
   messageTitle "Ingress Certificate for ALB Load Balancer"
 
@@ -1079,15 +1135,15 @@ deployDemoApp() {
   APP_NAMESPACE="demo-app"
   APP_DEPLOYMENT="demo-app"
   APP_INGRESS="demo-app-ingress"
-  APP_URL="demo.fortiaigate.fortidemo.ch"
+  APP_URL="demo.$ROUT53_DOMAIN"
 
   messageTitle "Deploy Demo App for Ingress Test"
 
-  CERT_ARN=$(getCertARN "*.fortiaigate.fortidemo.ch")
+  CERT_ARN=$(getCertARN "*.$ROUT53_DOMAIN")
   ret=$?
   if [ $ret -ne 0 -o -z "$CERT_ARN" ]; then
     echo "ERROR: Failed to get Certificate ARN"
-    echo "       => getCertARN \"*.fortiaigate.fortidemo.ch\""
+    echo "       => getCertARN \"*.$ROUT53_DOMAIN\""
     return 1
   fi
 
@@ -1232,11 +1288,11 @@ deployAppIngress() {
     exit 1
   fi
 
-  CERT_ARN=$(getCertARN "*.fortiaigate.fortidemo.ch")
+  CERT_ARN=$(getCertARN "*.$ROUT53_DOMAIN")
   ret=$?
   if [ $ret -ne 0 -o -z "$CERT_ARN" ]; then
     echo "ERROR: Failed to get Certificate ARN"
-    echo "       => getCertARN \"*.fortiaigate.fortidemo.ch\""
+    echo "       => getCertARN \"*.$ROUT53_DOMAIN\""
     exit 1
   fi
 
@@ -1599,9 +1655,9 @@ EOF
     exit 1
   fi
 
-  echo " ▪  Write EFS configuration to state file (\$HOME/.faig.stat)"
-  echo "export EFS_FILE_SYSTEM_ID=$EFS_FILE_SYSTEM_ID"    >> $HOME/.faig.stat
-  echo "export EFS_SECURITY_GROUP_ID=$EFS_SECURITY_GROUP_ID" >> $HOME/.faig.stat
+  echo " ▪  Write EFS configuration to state file (\$HOME/.faig/deploy.stat)"
+  echo "export EFS_FILE_SYSTEM_ID=$EFS_FILE_SYSTEM_ID"    >> $HOME/.faig/deploy.stat
+  echo "export EFS_SECURITY_GROUP_ID=$EFS_SECURITY_GROUP_ID" >> $HOME/.faig/deploy.stat
 
   echo " ▪ EFS RWX StorageClass installed successfully"
   kubectl get storageclass "$EFS_STORAGE_CLASS"
@@ -2566,10 +2622,10 @@ installFAIGchart() {
   # Environment Variables
   AWS_ACCOUNT_ID=$(aws sts get-caller-identity | jq -r '.Account')
   ECR_FORTIAIGATE_REPOSITORY="${AWS_ACCOUNT_ID}.dkr.ecr.${ECR_REGION}.amazonaws.com/fortiaigate"
-  STAGEDIR=/tmp/faig_$ECR_FORTIAIGATE_TAG
+  [ -z "$ECR_STAGEDIR" ] && ECR_STAGEDIR=/tmp/faig_$ECR_FORTIAIGATE_TAG
 
   # Cleanup from previous Build
-  [ -d $STAGEDIR ] && rm -rf $STAGEDIR; mkdir $STAGEDIR
+  [ -d $ECR_STAGEDIR ] && rm -rf $ECR_STAGEDIR; mkdir $ECR_STAGEDIR
 
   # ----------------------------------------------------------------------------------------
   # Unpack Helm Chart
@@ -2577,7 +2633,7 @@ installFAIGchart() {
   CHARTFILE=$(ls -1 $ECR_FORTIAIGATE_SOURCE_DIR/FAIG_helm_chart*.tar)
 
   if [ -f "$CHARTFILE" ]; then 
-    tar xf $CHARTFILE -C $STAGEDIR
+    tar xf $CHARTFILE -C $ECR_STAGEDIR
   else
     echo "ERROR: Helm Chart file ($CHARTFILE) not found"
     exit 1
@@ -2587,13 +2643,13 @@ installFAIGchart() {
   # 12.7 Fix 7: License Validation Bug (build0004)
   # https://github.com/asameli-ftnt/fortiaigate-doc?tab=readme-ov-file#128-fix-8-triton-hardcoded-image-tags-build0012
   # ----------------------------------------------------------------------------------------
-  sed -i '' 's+triton-models:[0-9].*$+triton-models:{{ .Values.fortiaigate.image.tag }}+g' $STAGEDIR/fortiaigate/templates/triton-server.yaml
-  sed -i '' 's+custom-triton:[0-9].*$+custom-triton:{{ .Values.fortiaigate.image.tag }}+g' $STAGEDIR/fortiaigate/templates/triton-server.yaml
+  sed -i '' 's+triton-models:[0-9].*$+triton-models:{{ .Values.fortiaigate.image.tag }}+g' $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml
+  sed -i '' 's+custom-triton:[0-9].*$+custom-triton:{{ .Values.fortiaigate.image.tag }}+g' $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml
 
   # ----------------------------------------------------------------------------------------
   # 12.2 Fix 2: Triton GPU Node Affinity
   # ----------------------------------------------------------------------------------------
-  TEMPLATEFILE=$STAGEDIR/fortiaigate/templates/triton-server
+  TEMPLATEFILE=$ECR_STAGEDIR/fortiaigate/templates/triton-server
   awk '
   /^[[:space:]]*nodeSelectorTerms:[[:space:]]*$/ {
     print
@@ -2612,7 +2668,7 @@ installFAIGchart() {
   # ----------------------------------------------------------------------------------------
   # Copy Licenses files to the chart directory
   # ----------------------------------------------------------------------------------------
-  cp -r $FAID_LICENSE_DIR/* $STAGEDIR/fortiaigate/files/licenses/
+  cp -r $FAIG_LICENSE_DIR/* $ECR_STAGEDIR/fortiaigate/files/licenses/
 
   # ----------------------------------------------------------------------------------------
   # Make license mapping on the NodeGroup nodes
@@ -2643,8 +2699,12 @@ installFAIGchart() {
       -e "s/XXX_REPOTAG_XXX/$ECR_FORTIAIGATE_TAG/g" \
       -e '/^XXXLICENSESXXX$/{r /tmp/values-licenses.yaml' -e ';d;}' cfg/values-template.yaml > /tmp/values.yaml
 
+  echo "  -------------------------------------------------------------------------------------------------------------------------------------------------------"
+  cat /tmp/values.yaml | sed 's/^/  /g'
+  echo "  -------------------------------------------------------------------------------------------------------------------------------------------------------"
+
   echo " ▪ Install / upgrade ....: fortiaigate" 
-  helm upgrade --install fortiaigate ${STAGEDIR}/fortiaigate -n fortiaigate -f /tmp/values.yaml --create-namespace --wait >  /tmp/error.log 2>&1; ret=$?
+  helm upgrade --install fortiaigate ${ECR_STAGEDIR}/fortiaigate -n fortiaigate -f /tmp/values.yaml --create-namespace --wait --wait-for-jobs --timeout 15m0s >  /tmp/error.log 2>&1; ret=$?
   if [ $ret -ne 0 ]; then
     logMessages /tmp/error.log
     echo "ERROR: Failed to install Helm chart fortiaigate"
@@ -2943,11 +3003,11 @@ prepareEFSinfrastructure() {
   done
 
   {
-    grep -v '^export EFS_FILE_SYSTEM_ID=' "$HOME/.faig.stat" 2>/dev/null | \
+    grep -v '^export EFS_FILE_SYSTEM_ID=' "$HOME/.faig/deploy.stat" 2>/dev/null | \
     grep -v '^export EFS_SECURITY_GROUP_ID='
     echo "export EFS_FILE_SYSTEM_ID=$EFS_FILE_SYSTEM_ID"
     echo "export EFS_SECURITY_GROUP_ID=$EFS_SECURITY_GROUP_ID"
-  } > /tmp/faig.stat.$$ && mv /tmp/faig.stat.$$ "$HOME/.faig.stat"
+  } > /tmp/faig.stat.$$ && mv /tmp/faig.stat.$$ "$HOME/.faig/deploy.stat"
 
   echo " ▪ EFS_FILE_SYSTEM_ID ...: $EFS_FILE_SYSTEM_ID"
   echo " ▪ EFS_SECURITY_GROUP_ID : $EFS_SECURITY_GROUP_ID"
@@ -3128,7 +3188,7 @@ installOpenWebUI() {
   helm repo add open-webui https://helm.openwebui.com
 
   echo " ▪ Install / upgrade ....: fortiaigate"
-  helm upgrade --install fortiaigate ${STAGEDIR}/fortiaigate -n fortiaigate -f /tmp/values.yaml --create-namespace --wait >  /tmp/error.log 2>&1; ret=$?
+  helm upgrade --install fortiaigate ${ECR_STAGEDIR}/fortiaigate -n fortiaigate -f /tmp/values.yaml --create-namespace --wait >  /tmp/error.log 2>&1; ret=$?
   if [ $ret -ne 0 ]; then
     logMessages /tmp/error.log
     echo "ERROR: Failed to install Helm chart fortiaigate"
@@ -3137,6 +3197,20 @@ installOpenWebUI() {
 
 }
 
+deleteClassicLoadBalancersInVpc() {
+  vpcId="$1"
+
+  aws elb describe-load-balancers \
+    --region $AWS_REGION > /tmp/elbs.json 2>/dev/null
+
+  for lb in $(jq -r --arg vpc "$vpcId" '.LoadBalancerDescriptions[]? | select(.VPCId == $vpc) | .LoadBalancerName' /tmp/elbs.json); do
+    echo "Delete Classic Load Balancer: $lb"
+    aws elb delete-load-balancer \
+      --load-balancer-name "$lb" \
+      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+    [ $ret -ne 0 ] && logMessages /tmp/error.log
+  done
+}
 
 
 

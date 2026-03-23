@@ -10,15 +10,7 @@
 # 2026-03-11 sdubois Initial version
 #===============================================================================
 [ -f ./functions ] && . ./functions
-if [ -f $HOME/.faig.cfg ]; then
-   . $HOME/.faig.cfg
-else
-  echo "ERROR: Config file $HOME/.faig.cfg not available"
-  exit
-fi
-
-STAGEDIR=/tmp/faig_$ECR_FORTIAIGATE_TAG
-
+[ -z "$ECR_STAGEDIR" ] && ECR_STAGEDIR=/tmp/faig_$ECR_FORTIAIGATE_TAG
 
 echo ""
 echo "uploadECR.sh.sh - Upload FortiAIgate Images to ECR"
@@ -39,7 +31,7 @@ get_ecr_repo() {
   esac
 }
 
-checkLocalConfig
+checkLocalConfig 
 verifyOrLoginSSO
 verifyCLIutils registry
 verifyAWScredentials

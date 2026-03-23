@@ -11,10 +11,10 @@
 # 2026-03-14 sdubois Wait for cluster stack and repair DELETE_FAILED if needed
 #===============================================================================
 [ -f ./functions ] && . ./functions
-if [ -f $HOME/.faig.cfg ]; then
-   . $HOME/.faig.cfg
+if [ -f $HOME/.faig/config ]; then
+   . $HOME/.faig/config
 else
-  echo "ERROR: Config file $HOME/.fortiaigate.cfg not available"
+  echo "ERROR: Config file $HOME/.faig/config not available"
   exit
 fi
 
