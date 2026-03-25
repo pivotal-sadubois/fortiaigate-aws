@@ -85,7 +85,7 @@ FAIG_license_manager-V8.0.0-build0020-FORTINET.tar
 FAIG_logd-V8.0.0-build0020-FORTINET.tar
 FAIG_scanner-V8.0.0-build0020-FORTINET.tar
 FAIG_triton-models-V8.0.0-build0020-FORTINET.tar
-FAIG_webui-V8.0.0-build0020-FORTINET.tar'''
+FAIG_webui-V8.0.0-build0020-FORTINET.tar
 '''
 
 ## Create Configuration File
