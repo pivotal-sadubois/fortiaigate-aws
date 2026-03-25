@@ -31,7 +31,7 @@ installALBloadBalancer
 installIngressCertificate "$ROUT53_HOSTED_ZONE_ID"
 
 deployDemoApp
-updateAppDNS "demo-app" "demo.$ROUT53_DOMAIN" "$ROUT53_HOSTED_ZONE_ID"
+updateAppDNS "demo-app" "demo-app" "demo.$ROUT53_DOMAIN" "$ROUT53_HOSTED_ZONE_ID"
 testAppDNS "demo.$ROUT53_DOMAIN"
 
 messageTitle "Install Kubernetes Components"
@@ -46,7 +46,7 @@ installNVIDIAdevicePlugin
 installStorageClassGP3
 installFAIGchart
 
-#installOpenWebUI
+installOpenWebUI
 
 
 exit

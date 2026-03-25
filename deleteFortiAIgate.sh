@@ -30,6 +30,10 @@ verifyCLIutils
 verifyAWScredentials
 verifyAWSRoute53credentials
 
+messageTitle "Uninstall Open WebUI Packages"
+helm delete open-webui -n open-webui  > /dev/null 2>&1
+kubectl delete ns open-webui > /dev/null 2>&1
+
 messageTitle "Uninstall FortiAIgate Packages"
 helm delete fortiaigate -n fortiaigate > /dev/null 2>&1
 kubectl delete ns fortiaigate > /dev/null 2>&1
