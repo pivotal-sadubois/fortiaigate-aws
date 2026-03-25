@@ -76,9 +76,7 @@ Download the FortiAIGate release tar files from:
 - https://info.fortinet.com
 
 Store them locally, for example: $HOME/Documents/FAIG/build2020 as shown below
-
-'''
-xx
+```
 FAIG_api-V8.0.0-build0020-FORTINET.tar
 FAIG_core-V8.0.0-build0020-FORTINET.tar
 FAIG_custom-triton-V8.0.0-build0020-FORTINET.tar
@@ -88,19 +86,18 @@ FAIG_logd-V8.0.0-build0020-FORTINET.tar
 FAIG_scanner-V8.0.0-build0020-FORTINET.tar
 FAIG_triton-models-V8.0.0-build0020-FORTINET.tar
 FAIG_webui-V8.0.0-build0020-FORTINET.tar
-eeee
-'''
+```
 
 ## Create Configuration File
 Create the FortiAIgate (.faig) folder and configuraion file: $HOME/.faig/config
 
 Create a configuration directory and file:
-'''
+```
 mkdir -p $HOME/.faig
 vi $HOME/.faig/config
-'''
+```
 Example configuration: $HOME/.faig/config
-'''
+```
 AWS_REGION=eu-north-1
 EKS_CLUSTER_NAME="eks-genai-fortiaigate"
 EKS_ODMD_NG_NODES=1
@@ -125,7 +122,7 @@ FAIG_LICENSE_DIR=$HOME/.faig/licenses
 ECR_FORTIAIGATE_TAG=build0020
 ECR_FORTIAIGATE_SOURCE_DIR="$HOME/Documents/FAIG/$ECR_FORTIAIGATE_TAG"
 ECR_REGION=$AWS_REGION
-'''
+```
 
 Make sure the ECR_FORTIAIGATE_SOURCE_DIR is pointing to the directory where you have stored the downloaded files.w
 
@@ -133,6 +130,7 @@ Make sure the ECR_FORTIAIGATE_SOURCE_DIR is pointing to the directory where you 
 
 
 
+'''
 
 
 
