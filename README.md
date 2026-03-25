@@ -76,7 +76,9 @@ Download the FortiAIGate release tar files from:
 - https://info.fortinet.com
 
 Store them locally, for example: $HOME/Documents/FAIG/build2020 as shown below
+
 '''
+xx
 FAIG_api-V8.0.0-build0020-FORTINET.tar
 FAIG_core-V8.0.0-build0020-FORTINET.tar
 FAIG_custom-triton-V8.0.0-build0020-FORTINET.tar
@@ -86,6 +88,7 @@ FAIG_logd-V8.0.0-build0020-FORTINET.tar
 FAIG_scanner-V8.0.0-build0020-FORTINET.tar
 FAIG_triton-models-V8.0.0-build0020-FORTINET.tar
 FAIG_webui-V8.0.0-build0020-FORTINET.tar
+eeee
 '''
 
 ## Create Configuration File
