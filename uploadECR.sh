@@ -15,7 +15,7 @@
 echo ""
 echo "uploadECR.sh.sh - Upload FortiAIgate Images to ECR"
 echo "by Adrian Sameli / Sacha Dubois, Fortinet"
-echo "------------------------------------------------------------------------------------------"
+messageLine
 
 get_ecr_repo() {
   case "$1" in
@@ -173,11 +173,11 @@ fi
 echo ""
 ok "All images uploaded to ECR with tag: $ECR_FORTIAIGATE_TAG"
 
-echo " ▪  Write ECR configuration to state file (\$HOME/.faig-ecr-upload.stat)"
-echo "export ECR_FORTIAIGATE_REPOSITORY=$ECR_FORTIAIGATE_REPOSITORY"       >  $HOME/.faig-ecr-upload.stat
-echo "export ECR_FORTIAIGATE_TAG=$ECR_FORTIAIGATE_TAG"                     >> $HOME/.faig-ecr-upload.stat
-echo "export ECR_FORTIAIGATE_SOURCE_DIR=$ECR_FORTIAIGATE_SOURCE_DIR"       >> $HOME/.faig-ecr-upload.stat
-echo "export ECR_REGION=$ECR_REGION"                                       >> $HOME/.faig-ecr-upload.stat
+echo " ▪  Write ECR configuration to state file (\$HOME/.faig/ecr-upload.stat)"
+echo "export ECR_FORTIAIGATE_REPOSITORY=$ECR_FORTIAIGATE_REPOSITORY"       >  $HOME/.faig/ecr-upload.stat
+echo "export ECR_FORTIAIGATE_TAG=$ECR_FORTIAIGATE_TAG"                     >> $HOME/.faig/ecr-upload.stat
+echo "export ECR_FORTIAIGATE_SOURCE_DIR=$ECR_FORTIAIGATE_SOURCE_DIR"       >> $HOME/.faig/ecr-upload.stat
+echo "export ECR_REGION=$ECR_REGION"                                       >> $HOME/.faig/ecr-upload.stat
 
 
 

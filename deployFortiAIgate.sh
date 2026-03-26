@@ -15,7 +15,7 @@
 echo ""
 echo "deployFortiAIgate.sh - Deploy FortiAIgate"
 echo "by Adrian Sameli / Sacha Dubois, Fortinet"
-echo "------------------------------------------------------------------------------------------"
+messageLine
 
 checkLocalConfig
 verifyOrLoginSSO
@@ -38,6 +38,7 @@ messageTitle "Install Kubernetes Components"
 
 prepareEFSinfrastructure
 installEFSCSIDriver
+installEBSCSIDriver
 
 EFS_STORAGE_CLASS=efs-sc-faig EFS_MODE=faig installEFSstorageClass
 EFS_STORAGE_CLASS=efs-sc      EFS_MODE=shared installEFSstorageClass

@@ -21,7 +21,7 @@ fi
 echo ""
 echo "deleteFortiAIgate.sh - Delete FortiAIgate"
 echo "by Adrian Sameli / Sacha Dubois, Fortinet"
-echo "------------------------------------------------------------------------------------------"
+messageLine
 
 checkLocalConfig
 verifyOrLoginSSO
