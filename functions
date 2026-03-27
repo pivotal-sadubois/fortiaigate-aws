@@ -170,7 +170,7 @@ logMessages() {
 # ------------------------------------------------------------------------------------------
 messageLine() {
   #echo "------------------------------------------------------------------------------------------------------------------------------------------------------------------"
-  COL=120
+  COL=150
   str="";n=0; while [ $n -lt $COL ]; do str="${str}-"; let n=n+1; done
   echo "$str"
 }
@@ -646,7 +646,7 @@ updateAppDNS() {
   HOSTED_ZONE_ID="$4"
   APP_INGRESS="${APP_NAME}-ingress"
 
-  messageTitle "Update Route53 DNS Record for Application"
+  messageTitle "Verify Route53 DNS Record for $APP_NAME Application"
 
   if [ -z "$APP_NAMESPACE" -o -z "$APP_FQDN" -o -z "$HOSTED_ZONE_ID" ]; then
     echo "ERROR: Missing arguments"
@@ -662,7 +662,7 @@ updateAppDNS() {
 
   if [ $ret -ne 0 -o -z "$ALB_HOSTNAME" ]; then
     logMessages /tmp/error.log
-    echo "ERROR: Failed to get ALB hostname from ingress"
+    echo "ERROR: updateAppDNS - Failed to get ALB hostname from ingress"
     echo "       => kubectl -n $APP_NAMESPACE get ingress $APP_INGRESS"
     exit 1
   fi
@@ -693,6 +693,12 @@ updateAppDNS() {
     echo "ERROR: Failed to read current Route53 DNS record"
     echo "       => aws route53 list-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID"
     exit 1
+  fi
+
+  # No Change needed
+  if [ "$OLD_DNS_TARGET" == "$NEW_DNS_TARGET" ]; then 
+    restoreAWScontext
+    return
   fi
 
   [ "$OLD_DNS_TARGET" = "None" ] && OLD_DNS_TARGET=""
@@ -1322,7 +1328,7 @@ deployAppIngress() {
 
   echo " ▪ Waiting for Ingress Address..."
   n=0
-  while [ $n -lt 30 ]; do
+  while [ $n -lt 60 ]; do
     ALB_HOSTNAME=$(kubectl -n "$APP_NAMESPACE" get ingress "$APP_INGRESS" \
       -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/tmp/error.log)
     [ -n "$ALB_HOSTNAME" ] && break
@@ -1332,7 +1338,7 @@ deployAppIngress() {
 
   if [ -z "$ALB_HOSTNAME" ]; then
     logMessages /tmp/error.log
-    echo "ERROR: Failed to get ALB hostname from ingress"
+    echo "ERROR: deployAppIngress - Failed to get ALB hostname from ingress"
     echo "       => kubectl -n $APP_NAMESPACE get ingress $APP_INGRESS -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'"
     exit 1
   fi
@@ -1802,6 +1808,7 @@ verifyOrLoginSSO() {
   fi
 
   export AWS_PROFILE="$PROFILE"
+  messageLine
   echo "AWS SSO login successful (profile: $PROFILE)"
 }
 
@@ -2456,13 +2463,19 @@ installFAIGchart() {
   cat /tmp/values.yaml | sed 's/^/   /g'
   echo "   ---------------------------------------------------------------------------------------------------------------------"
 
-  echo " ▪ Install / upgrade ....: fortiaigate" 
-  helm upgrade --install fortiaigate ${ECR_STAGEDIR}/fortiaigate -n fortiaigate -f /tmp/values.yaml \
-               --create-namespace --wait --wait-for-jobs --timeout 15m0s >  /tmp/error.log 2>&1; ret=$?
-  if [ $ret -ne 0 ]; then
-    logMessages /tmp/error.log
-    echo "ERROR: Failed to install Helm chart fortiaigate"
-    exit 1
+  stt=$(helm list -n fortiaigate -o json | jq -r --arg key "fortiaigate" '.[] | select(.name == $key).status')
+  if [ "$stt" != "deployed" ]; then 
+    echo " ▪ Install Helm Chart (fortiaigate)" 
+    helm upgrade --install fortiaigate ${ECR_STAGEDIR}/fortiaigate -n fortiaigate -f /tmp/values.yaml \
+                 --create-namespace --wait --wait-for-jobs --timeout 20m0s >  /tmp/error.log 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to install Helm chart fortiaigate"
+      exit 1
+    fi
+  else
+   ver=$(helm list -n fortiaigate -o json | jq -r --arg key "fortiaigate" '.[] | select(.name == $key).app_version')
+    echo " ▪ Helm Chart (fortiaigate) already successfuly deployed ($ver)"
   fi
 }
 
@@ -3068,17 +3081,24 @@ installOpenWebUI() {
     echo " ▪ Helm Repo https://aws.github.io/eks-charts already installed"
   fi
 
-  echo " ▪ Install / upgrade ....: open-webui"
-  helm upgrade --install  open-webui open-webui/open-webui \
-    -n open-webui --create-namespace \
-    --set ollama.enabled=false \
-    --set service.type=ClusterIP --create-namespace --wait >  /tmp/error.log 2>&1; ret=$?
-
-  if [ $ret -ne 0 ]; then
-    logMessages /tmp/error.log
-    echo "ERROR: Failed to install Helm chart open-webui"
-    exit 1
-  fi
+#gaga1
+  stt=$(helm list -n open-webui -o json | jq -r --arg key "open-webui" '.[] | select(.name == $key).status')
+  if [ "$stt" != "deployed" ]; then
+    echo " ▪ Install / upgrade ....: open-webui"
+    helm upgrade --install  open-webui open-webui/open-webui \
+      -n open-webui --create-namespace \
+      --set ollama.enabled=false \
+      --set service.type=ClusterIP --create-namespace --wait >  /tmp/error.log 2>&1; ret=$?
+  
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to install Helm chart open-webui"
+      exit 1
+    fi
+  else
+    ver=$(helm list -n open-webui -o json | jq -r --arg key "open-webui" '.[] | select(.name == $key).app_version')
+    echo " ▪ Helm Chart (open-webui) already successfuly deployed ($ver)"
+  fi 
 
   # Deploy Ingress only if not already installed
   kubectl -n "$APP_NAMESPACE" get ingress "$APP_INGRESS" >/dev/null 2>&1; ret=$?
@@ -3096,7 +3116,15 @@ installOpenWebUI() {
   fi
 
   updateAppDNS "open-webui" "webui" "webui.$ROUT53_DOMAIN" "$ROUT53_HOSTED_ZONE_ID"
-#gaga
+
+  host=$(kubectl -n open-webui get ingress webui-ingress -o json | jq -r '.spec.rules[].host') 
+
+  echo ""
+  echo "-------------------------------------------------------------------------------------------------------------------------------------------------------"
+  echo " FortiAIgate Installation Successfully Completed, Access the OpenWeb UI by the following URL:"
+  echo " => https://$host"
+  echo "-------------------------------------------------------------------------------------------------------------------------------------------------------"
+
 }
 
 deleteClassicLoadBalancersInVpc() {
@@ -3114,7 +3142,40 @@ deleteClassicLoadBalancersInVpc() {
   done
 }
 
+# ------------------------------------------------------------------------------------------
+# Function Name ......: waitForNamespaceDeletion
+# Function Purpose ...: Wait for EKS Cluster to be deleted
+# ------------------------------------------------------------------------------------------
+# Dependencies .......: EFS_FILE_SYSTEM_ID, EFS_STORAGE_CLASS
+# Optional Vars ......: EFS_MODE=[shared|faig]
+# ------------------------------------------------------------------------------------------
+waitForNamespaceDeletion() {
+  local ns="$1"
+  local timeout="${2:-600}"   # default 10 minutes
+  local interval=10
+  local elapsed=0
 
+  messageTitle "Waiting for namespace deletion ($ns)"
+
+  while true; do
+    if ! kubectl get ns "$ns" >/dev/null 2>&1; then
+      echo "  ▪ Namespace $ns deleted"
+      return 0
+    fi
+
+    local phase
+    phase=$(kubectl get ns "$ns" -o jsonpath='{.status.phase}' 2>/dev/null || echo "unknown")
+    echo "  ▪ Namespace $ns still exists (phase: $phase)"
+
+    if [ "$elapsed" -ge "$timeout" ]; then
+      echo "  ▪ Timeout waiting for namespace $ns deletion"
+      return 1
+    fi
+
+    sleep "$interval"
+    elapsed=$((elapsed + interval))
+  done
+}
 
 
 
