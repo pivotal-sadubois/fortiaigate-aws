@@ -323,10 +323,6 @@ verifyAWSRoute53credentials() {
     switchToDNSaccount
   fi
 
-echo "ROUT53_SEPERATE_ACCOUNT:$ROUT53_SEPERATE_ACCOUNT"
-echo "Test: aws sts get-caller-identity"
-aws sts get-caller-identity
-
   aws sts get-caller-identity > /dev/null 2>&1; ret=$?
   if [ $ret -ne 0 ]; then
     echo "XXX1 ERROR: Invalid Credentials or credentials have expired"
@@ -346,7 +342,9 @@ aws sts get-caller-identity
     echo " ▪ AWS REGION .........: $AWS_REGION"
   fi
 
-  restoreAWScontext
+  if [ "$ROUT53_SEPERATE_ACCOUNT" == "true" -o "$ROUT53_SEPERATE_ACCOUNT" == "True" -o "$ROUT53_SEPERATE_ACCOUNT" == "TRUE" ]; then
+    restoreAWScontext
+  fi
 }
 
 # ------------------------------------------------------------------------------------------
