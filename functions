@@ -397,7 +397,7 @@ echo "DEBUG: installEKSCluster: AWS_REGION:$AWS_REGION EKS_CLUSTER_NAME:$EKS_CLU
 
 echo "DEBUG: installEKSCluster: aws eks list-clusters --region $AWS_REGION"
 
-  cluster=$(aws eks list-clusters --region $AWS_REGION | jq --arg key "$EKS_CLUSTER_NAME" -r '.clusters[] | select(. == $key)')
+  cluster=$(aws eks list-clusters --region $"AWS_REGION" | jq --arg key "$EKS_CLUSTER_NAME" -r '.clusters[] | select(. == $key)')
   if [ "$cluster" != "$EKS_CLUSTER_NAME" ]; then
     sed -e "s/CLUSTER/$EKS_CLUSTER_NAME/g" \
         -e "s/REGION/$AWS_REGION/g"  \
@@ -414,7 +414,7 @@ echo "DEBUG: installEKSCluster: eksctl create cluster -f /tmp/eks-cluster.yaml -
     fi
 
     echo " ▪ Update Kubeconfig for the EKS Cluster"
-    aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region $AWS_REGION > /dev/null 2>&1
+    aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region "$AWS_REGION" > /dev/null 2>&1
 
     echo " ▪  Write EKS configuration to state file (\$HOME/.faig/depliy.stat)"
     echo "export EKS_CLUSTER_NAME=$EKS_CLUSTER_NAME"       >  $HOME/.faig/deploy.stat
