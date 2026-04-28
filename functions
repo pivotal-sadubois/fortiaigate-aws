@@ -316,8 +316,10 @@ verifyAWSRoute53credentials() {
   # --------------------------------------------------------------------------------------
   # Switch to Route53 account and create validation CNAME
   # --------------------------------------------------------------------------------------
-  preserveAWScontext
-  switchToDNSaccount
+  if [ "$ROUT53_SEPERATE_ACCOUNT" == "true" -o "$ROUT53_SEPERATE_ACCOUNT" == "" ]; then
+    preserveAWScontext
+    switchToDNSaccount
+  fi
 
   aws sts get-caller-identity > /dev/null 2>&1; ret=$?
   if [ $ret -ne 0 ]; then
