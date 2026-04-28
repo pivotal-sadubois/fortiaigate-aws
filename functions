@@ -391,6 +391,9 @@ verifySpotPlacementScrores() {
 # ------------------------------------------------------------------------------------------
 installEKSCluster() {
   messageTitle "AWS EKS Kubernetes Cluster Deployment"
+echo "DEBUG: installEKSCluster: AWS_REGION:$AWS_REGION EKS_CLUSTER_NAME:$EKS_CLUSTER_NAME"
+
+echo "DEBUG: installEKSCluster: aws eks list-clusters --region $AWS_REGION"
 
   cluster=$(aws eks list-clusters --region $AWS_REGION | jq --arg key "$EKS_CLUSTER_NAME" -r '.clusters[] | select(. == $key)')
   if [ "$cluster" != "$EKS_CLUSTER_NAME" ]; then
@@ -399,6 +402,8 @@ installEKSCluster() {
         -e "s/REGION/$AWS_REGION/g"  \
         -e "s/REGION/$AWS_REGION/g"  \
         files/eks-cluster-template.yaml > /tmp/eks-cluster.yaml
+
+echo "DEBUG: installEKSCluster: eksctl create cluster -f /tmp/eks-cluster.yaml --profile $AWS_PROFILE"
     eksctl create cluster -f /tmp/eks-cluster.yaml --profile "$AWS_PROFILE" > /tmp/error.log 2>&1; ret=$?
     if [ $ret -ne 0 ]; then
       logMessages /tmp/error.log
