@@ -26,6 +26,8 @@ checkLocalConfig() {
   [ ! -d $HOME/.faig ] && mkdir -p $HOME/.faig
   [ -f $HOME/.faig/config ] && . $HOME/.faig/config
 
+echo "DEBUG: checkLocalConfig AWS_REGION:$AWS_REGION"
+
   # Set Default Variables
   [ -z "$ECR_STAGEDIR" ] && ECR_STAGEDIR=/tmp/faig_$ECR_FORTIAIGATE_TAG
 #  [ -z "$FAIG_LICENSE_DIR" ] && FAIG_LICENSE_DIR=$HOME/.faig/licenses

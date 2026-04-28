@@ -53,7 +53,6 @@ deleteEFSstorage
 # Step 2 - Delete EKS cluster
 # ------------------------------------------------------------------------------------------
 deleteEKScluster
-waitForEKSclusterDeletion
 
 # ------------------------------------------------------------------------------------------
 # Step 3 - Wait for cluster CloudFormation stack and repair if needed
@@ -78,3 +77,6 @@ deleteAllStacks
 rm -f $HOME/.fortiaigate.stat
 
 exit
+
+
+
