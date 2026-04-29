@@ -1189,7 +1189,7 @@ deployDemoApp() {
   echo " ▪ CERT_ARN ............: $CERT_ARN"
 
   cp files/demo-app.yaml /tmp/demo-app.yaml
-  sed "s|XXX_ARN_XXX|$CERT_ARN|g" files/demo-app-ingress-template.yaml > /tmp/demo-app-ingress.yaml
+  sed -e "s|XXX_ARN_XXX|$CERT_ARN|g" -e "s|XXXDOMAINXXX|$ROUTE53_DOMAIN|g" files/demo-app-ingress-template.yaml > /tmp/demo-app-ingress.yaml
 
   # Create Namespace if missing
   kubectl get namespace "$APP_NAMESPACE" >/dev/null 2>&1; ret=$?
@@ -3124,7 +3124,7 @@ installOpenWebUI() {
     
   echo " ▪ CERT_ARN ............: $CERT_ARN"      
     
-  sed "s|XXX_ARN_XXX|$CERT_ARN|g" files/webui-ingress-template.yaml > /tmp/webui-ingress.yaml
+  sed -e "s|XXX_ARN_XXX|$CERT_ARN|g" -e "s|XXXDOMAINXXX|$ROUTE53_DOMAIN|g" files/webui-ingress-template.yaml > /tmp/webui-ingress.yaml
 
   nam=$(helm repo list -o json | jq -r --arg key "open-webui" '.[] | select(.name == $key).name')
   if [ "$nam" != "open-webui" ]; then 

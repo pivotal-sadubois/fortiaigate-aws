@@ -11,7 +11,7 @@ metadata:
 spec:
   ingressClassName: alb
   rules:
-    - host: demo.fortiaigate.fortidemo.ch
+    - host: demo.XXXDOMAINXXX
       http:
         paths:
           - path: /
