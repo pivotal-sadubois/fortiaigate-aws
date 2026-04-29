@@ -30,15 +30,14 @@ verifyCLIutils
 verifyAWScredentials
 verifyAWSRoute53credentials
 
-messageTitle "Uninstall Open WebUI Packages"
-helm delete open-webui -n open-webui  > /dev/null 2>&1
-kubectl delete ns open-webui > /dev/null 2>&1
-waitForNamespaceDeletion open-webui
+messageTitle "Uninstall Open WebUI and FortiAIgate"
+echo " ▪  Delete Open WebUI Helm Chart (open-webui)"
+deleteHelmChart open-webui open-webui
+deleteNamespace open-webui
 
-messageTitle "Uninstall FortiAIgate Packages"
-helm delete fortiaigate -n fortiaigate > /dev/null 2>&1
-kubectl delete ns fortiaigate > /dev/null 2>&1
-waitForNamespaceDeletion fortiaigate
+echo " ▪  Delete Open FortiAiGate Helm Chart (fortiaigate)"
+deleteHelmChart fortiaigate fortiaigate
+deleteNamespace fortiaigate
 
 messageTitle "Cleaning-up AWS EKS Kubernetes Cluster Deployment ($EKS_CLUSTER_NAME)"
 

@@ -18,29 +18,22 @@ echo "by Adrian Sameli / Sacha Dubois, Fortinet"
 messageLine
 
 checkLocalConfig
-echo "DEBUG-1: deployFortiAIgate.sh AWS_REGION:$AWS_REGION"
 
 verifyOrLoginSSO
-echo "DEBUG-2: deployFortiAIgate.sh AWS_REGION:$AWS_REGION"
 verifyEksctlCredentials
-echo "DEBUG-3: deployFortiAIgate.sh AWS_REGION:$AWS_REGION"
 verifyCLIutils deploy
-echo "DEBUG-4: deployFortiAIgate.sh AWS_REGION:$AWS_REGION"
 verifyAWScredentials
-echo "DEBUG-5: deployFortiAIgate.sh AWS_REGION:$AWS_REGION"
 verifyAWSRoute53credentials
-echo "DEBUG-6: deployFortiAIgate.sh AWS_REGION:$AWS_REGION"
 
 installEKSCluster
-echo "DEBUG-7: deployFortiAIgate.sh AWS_REGION:$AWS_REGION"
 #installNodeGroup
 #installEFSstorageClass
 installALBloadBalancer
-installIngressCertificate "$ROUT53_HOSTED_ZONE_ID"
+installIngressCertificate "$ROUTE53_HOSTED_ZONE_ID"
 
 deployDemoApp
-updateAppDNS "demo-app" "demo-app" "demo.$ROUT53_DOMAIN" "$ROUT53_HOSTED_ZONE_ID"
-testAppDNS "demo.$ROUT53_DOMAIN"
+updateAppDNS "demo-app" "demo-app" "demo.$ROUTE53_DOMAIN" "$ROUTE53_HOSTED_ZONE_ID"
+testAppDNS "demo.$ROUTE53_DOMAIN"
 
 messageTitle "Install Kubernetes Components"
 

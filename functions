@@ -26,8 +26,6 @@ checkLocalConfig() {
   [ ! -d $HOME/.faig ] && mkdir -p $HOME/.faig
   [ -f $HOME/.faig/config ] && . $HOME/.faig/config
 
-echo "DEBUG: checkLocalConfig AWS_REGION:$AWS_REGION"
-
   # Set Default Variables
   [ -z "$ECR_STAGEDIR" ] && ECR_STAGEDIR=/tmp/faig_$ECR_FORTIAIGATE_TAG
 #  [ -z "$FAIG_LICENSE_DIR" ] && FAIG_LICENSE_DIR=$HOME/.faig/licenses
@@ -72,39 +70,39 @@ echo "DEBUG: checkLocalConfig AWS_REGION:$AWS_REGION"
     fi
   fi
 
-  if [ "$ROUT53_DNS_UPDATES" == "true" -o "$ROUT53_DNS_UPDATES" == "True" -o "$ROUT53_DNS_UPDATES" == "TRUE" ]; then 
-    if [ -z "$ROUT53_HOSTED_ZONE_ID" -o -z "$ROUT53_DOMAIN" -o -z "$ROUT53_REGION" ]; then
+  if [ "$ROUTE53_DNS_UPDATES" == "true" -o "$ROUTE53_DNS_UPDATES" == "True" -o "$ROUTE53_DNS_UPDATES" == "TRUE" ]; then 
+    if [ -z "$ROUTE53_HOSTED_ZONE_ID" -o -z "$ROUTE53_DOMAIN" -o -z "$ROUTE53_REGION" ]; then
       local missing_variables=1
       echo ""
       echo "  MISSING ENVIRONMENT-VARIABES          DESCRIPTION        "
       echo "  -------------------------------------------------------------------------------------------------------------------------------------------------------"
     
-      if [ -z "${ROUT53_HOSTED_ZONE_ID}" ]; then
-        echo "  ROUT53_HOSTED_ZONE_ID                 (required) AWS Route54 ZoneID"
+      if [ -z "${ROUTE53_HOSTED_ZONE_ID}" ]; then
+        echo "  ROUTE53_HOSTED_ZONE_ID                 (required) AWS Route54 ZoneID"
       fi
 
-      if [ -z "${ROUT53_DOMAIN}" ]; then
-        echo "  ROUT53_DOMAIN                         (required) AWS Domain Name"
+      if [ -z "${ROUTE53_DOMAIN}" ]; then
+        echo "  ROUTE53_DOMAIN                         (required) AWS Domain Name"
         echo "                                                   => ie. fortiaigate.fortidemo.ch"
       fi
 
-      if [ -z "${ROUT53_REGION}" ]; then
-        echo "  ROUT53_REGION                         (required) AWS Route53 Region"
+      if [ -z "${ROUTE53_REGION}" ]; then
+        echo "  ROUTE53_REGION                         (required) AWS Route53 Region"
         echo "                                                   => ie. eu-north-1"
       fi
     fi
   fi
 
-  if [ "$ROUT53_SEPERATE_ACCOUNT" == "true" -o "$ROUT53_SEPERATE_ACCOUNT" == "True" -o "$ROUT53_SEPERATE_ACCOUNT" == "TRUE" ]; then
-    if [ -z "$ROUT53_ACCESS_KEY_ID" -o -z "$ROUT53_SECRET_ACCESS_KEY" ]; then 
+  if [ "$ROUTE53_SEPERATE_ACCOUNT" == "true" -o "$ROUTE53_SEPERATE_ACCOUNT" == "True" -o "$ROUTE53_SEPERATE_ACCOUNT" == "TRUE" ]; then
+    if [ -z "$ROUTE53_ACCESS_KEY_ID" -o -z "$ROUTE53_SECRET_ACCESS_KEY" ]; then 
       local missing_variables=1
       echo ""
       echo "  MISSING ENVIRONMENT-VARIABES          DESCRIPTION        "
       echo "  -------------------------------------------------------------------------------------------------------------------------------------------------------"
     
-      if [ -z "${ROUT53_ACCESS_KEY_ID}" ]; then
-        echo "  ROUT53_ACCESS_KEY_ID                  (required) AWS Access Key"
-        echo "  ROUT53_SECRET_ACCESS_KEY              (required) AWS Secret Access Key"
+      if [ -z "${ROUTE53_ACCESS_KEY_ID}" ]; then
+        echo "  ROUTE53_ACCESS_KEY_ID                  (required) AWS Access Key"
+        echo "  ROUTE53_SECRET_ACCESS_KEY              (required) AWS Secret Access Key"
       fi
     fi
   fi
@@ -119,13 +117,13 @@ echo "DEBUG: checkLocalConfig AWS_REGION:$AWS_REGION"
     echo "AWS_PROFILE=\"\""                                    >> $HOME/.faig/config
     echo ""                                                    >> $HOME/.faig/config
     echo "# AWS Rout54 Access Credentials"                     >> $HOME/.faig/config
-    echo "ROUT53_DNS_UPDATES=\"false\""                        >> $HOME/.faig/config
-    echo "ROUT53_REGION=\"\""                                  >> $HOME/.faig/config
-    echo "ROUT53_ACCESS_KEY_ID=\"\""                           >> $HOME/.faig/config
-    echo "ROUT53_SEPERATE_ACCOUNT=\"false\""                   >> $HOME/.faig/config
-    echo "ROUT53_SECRET_ACCESS_KEY=\"\""                       >> $HOME/.faig/config
-    echo "ROUT53_HOSTED_ZONE_ID=\"\""                          >> $HOME/.faig/config
-    echo "ROUT53_DOMAIN=\"\""                                  >> $HOME/.faig/config
+    echo "ROUTE53_DNS_UPDATES=\"false\""                        >> $HOME/.faig/config
+    echo "ROUTE53_REGION=\"\""                                  >> $HOME/.faig/config
+    echo "ROUTE53_ACCESS_KEY_ID=\"\""                           >> $HOME/.faig/config
+    echo "ROUTE53_SEPERATE_ACCOUNT=\"false\""                   >> $HOME/.faig/config
+    echo "ROUTE53_SECRET_ACCESS_KEY=\"\""                       >> $HOME/.faig/config
+    echo "ROUTE53_HOSTED_ZONE_ID=\"\""                          >> $HOME/.faig/config
+    echo "ROUTE53_DOMAIN=\"\""                                  >> $HOME/.faig/config
     echo ""                                                    >> $HOME/.faig/config
     echo "# FortiAiGate (FAIG) Configuration"                  >> $HOME/.faig/config
     echo "FAIG_LICENSE_DIR=\"\$HOME/.faid/licenses\""          >> $HOME/.faig/config
@@ -318,7 +316,7 @@ verifyAWSRoute53credentials() {
   # --------------------------------------------------------------------------------------
   # Switch to Route53 account and create validation CNAME
   # --------------------------------------------------------------------------------------
-  if [ "$ROUT53_SEPERATE_ACCOUNT" == "true" -o "$ROUT53_SEPERATE_ACCOUNT" == "True" -o "$ROUT53_SEPERATE_ACCOUNT" == "TRUE" ]; then
+  if [ "$ROUTE53_SEPERATE_ACCOUNT" == "true" -o "$ROUTE53_SEPERATE_ACCOUNT" == "True" -o "$ROUTE53_SEPERATE_ACCOUNT" == "TRUE" ]; then
     preserveAWScontext
     switchToDNSaccount
   fi
@@ -342,7 +340,7 @@ verifyAWSRoute53credentials() {
     echo " ▪ AWS REGION .........: $AWS_REGION"
   fi
 
-  if [ "$ROUT53_SEPERATE_ACCOUNT" == "true" -o "$ROUT53_SEPERATE_ACCOUNT" == "True" -o "$ROUT53_SEPERATE_ACCOUNT" == "TRUE" ]; then
+  if [ "$ROUTE53_SEPERATE_ACCOUNT" == "true" -o "$ROUTE53_SEPERATE_ACCOUNT" == "True" -o "$ROUTE53_SEPERATE_ACCOUNT" == "TRUE" ]; then
     restoreAWScontext
   fi
 }
@@ -391,11 +389,8 @@ verifySpotPlacementScrores() {
 # ------------------------------------------------------------------------------------------
 installEKSCluster() {
   messageTitle "AWS EKS Kubernetes Cluster Deployment"
-echo "DEBUG: installEKSCluster: AWS_REGION:$AWS_REGION EKS_CLUSTER_NAME:$EKS_CLUSTER_NAME"
 
-echo "DEBUG: installEKSCluster: aws eks list-clusters --region $AWS_REGION"
-
-  cluster=$(aws eks list-clusters --region $"AWS_REGION" | jq --arg key "$EKS_CLUSTER_NAME" -r '.clusters[] | select(. == $key)')
+  cluster=$(aws eks list-clusters --region "$AWS_REGION" | jq --arg key "$EKS_CLUSTER_NAME" -r '.clusters[] | select(. == $key)')
   if [ "$cluster" != "$EKS_CLUSTER_NAME" ]; then
     sed -e "s/CLUSTER/$EKS_CLUSTER_NAME/g" \
         -e "s/REGION/$AWS_REGION/g"  \
@@ -403,7 +398,6 @@ echo "DEBUG: installEKSCluster: aws eks list-clusters --region $AWS_REGION"
         -e "s/REGION/$AWS_REGION/g"  \
         files/eks-cluster-template.yaml > /tmp/eks-cluster.yaml
 
-echo "DEBUG: installEKSCluster: eksctl create cluster -f /tmp/eks-cluster.yaml --profile $AWS_PROFILE"
     eksctl create cluster -f /tmp/eks-cluster.yaml --profile "$AWS_PROFILE" > /tmp/error.log 2>&1; ret=$?
     if [ $ret -ne 0 ]; then
       logMessages /tmp/error.log
@@ -648,8 +642,8 @@ installALBloadBalancer() {
 # Return Value .......: none (exit on error)
 # ------------------------------------------------------------------------------------------
 updateAppDNS() {
-  # Skip this function if ROUT53_DNS_UPDATES is disabled
-  [ "${ROUT53_DNS_UPDATES:-true}" == "false" ] && return
+  # Skip this function if ROUTE53_DNS_UPDATES is disabled
+  [ "${ROUTE53_DNS_UPDATES:-true}" == "false" ] && return
 
   APP_NAMESPACE="$1"
   APP_NAME="$2"
@@ -691,7 +685,7 @@ updateAppDNS() {
   # --------------------------------------------------------------------------
   # Switch to DNS account
   # --------------------------------------------------------------------------
-  if [ "$ROUT53_SEPERATE_ACCOUNT" == "true" -o "$ROUT53_SEPERATE_ACCOUNT" == "True" -o "$ROUT53_SEPERATE_ACCOUNT" == "TRUE" ]; then
+  if [ "$ROUTE53_SEPERATE_ACCOUNT" == "true" -o "$ROUTE53_SEPERATE_ACCOUNT" == "True" -o "$ROUTE53_SEPERATE_ACCOUNT" == "TRUE" ]; then
     preserveAWScontext
     switchToDNSaccount
   fi
@@ -813,7 +807,7 @@ updateAppDNS() {
     exit 1
   fi
 
-  if [ "$ROUT53_SEPERATE_ACCOUNT" == "true" -o "$ROUT53_SEPERATE_ACCOUNT" == "True" -o "$ROUT53_SEPERATE_ACCOUNT" == "TRUE" ]; then
+  if [ "$ROUTE53_SEPERATE_ACCOUNT" == "true" -o "$ROUTE53_SEPERATE_ACCOUNT" == "True" -o "$ROUTE53_SEPERATE_ACCOUNT" == "TRUE" ]; then
     restoreAWScontext
   fi
 
@@ -933,13 +927,13 @@ deployApp() {
 # Return Value .......: Sets CERT_ARN
 # ------------------------------------------------------------------------------------------
 installIngressCertificate() {
-  # Skip this function if ROUT53_DNS_UPDATES is disabled
-  [ "$ROUT53_DNS_UPDATES" == "false" ] && return
+  # Skip this function if ROUTE53_DNS_UPDATES is disabled
+  [ "$ROUTE53_DNS_UPDATES" == "false" ] && return
 
   HOSTED_ZONE_ID="$1"
   ALB_REGION="$AWS_REGION"
-  CERT_DOMAIN="*.$ROUT53_DOMAIN"
-  CERT_SAN="$ROUT53_DOMAIN"
+  CERT_DOMAIN="*.$ROUTE53_DOMAIN"
+  CERT_SAN="$ROUTE53_DOMAIN"
 
   messageTitle "Ingress Certificate for ALB Load Balancer"
 
@@ -1159,15 +1153,15 @@ deployDemoApp() {
   APP_NAMESPACE="demo-app"
   APP_DEPLOYMENT="demo-app"
   APP_INGRESS="demo-app-ingress"
-  APP_URL="demo.$ROUT53_DOMAIN"
+  APP_URL="demo.$ROUTE53_DOMAIN"
 
   messageTitle "Deploy Demo App for Ingress Test"
 
-  CERT_ARN=$(getCertARN "*.$ROUT53_DOMAIN")
+  CERT_ARN=$(getCertARN "*.$ROUTE53_DOMAIN")
   ret=$?
   if [ $ret -ne 0 -o -z "$CERT_ARN" ]; then
     echo "ERROR: Failed to get Certificate ARN"
-    echo "       => getCertARN \"*.$ROUT53_DOMAIN\""
+    echo "       => getCertARN \"*.$ROUTE53_DOMAIN\""
     return 1
   fi
 
@@ -1279,9 +1273,9 @@ restoreAWScontext() {
 switchToDNSaccount() {
   unset AWS_SESSION_TOKEN
 
-  AWS_ACCESS_KEY_ID=$ROUT53_ACCESS_KEY_ID
-  AWS_SECRET_ACCESS_KEY=$ROUT53_SECRET_ACCESS_KEY
-  AWS_REGION=$ROUT53_REGION
+  AWS_ACCESS_KEY_ID=$ROUTE53_ACCESS_KEY_ID
+  AWS_SECRET_ACCESS_KEY=$ROUTE53_SECRET_ACCESS_KEY
+  AWS_REGION=$ROUTE53_REGION
 
   export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION
   [ -n "${AWS_SESSION_TOKEN:-}" ] && export AWS_SESSION_TOKEN
@@ -1312,11 +1306,11 @@ deployAppIngress() {
     exit 1
   fi
 
-  CERT_ARN=$(getCertARN "*.$ROUT53_DOMAIN")
+  CERT_ARN=$(getCertARN "*.$ROUTE53_DOMAIN")
   ret=$?
   if [ $ret -ne 0 -o -z "$CERT_ARN" ]; then
     echo "ERROR: Failed to get Certificate ARN"
-    echo "       => getCertARN \"*.$ROUT53_DOMAIN\""
+    echo "       => getCertARN \"*.$ROUTE53_DOMAIN\""
     exit 1
   fi
 
@@ -1390,6 +1384,15 @@ testAppDNS() {
     fi
     sleep 10
     let n=n+1
+  done
+
+  while [ $n -lt 30 ]; do
+    nslookup "$APP_FQDN" >/tmp/error.log 2>&1; ret=$?
+    if [ $ret -eq 0 ]; then
+      break
+    fi
+    sleep 10
+    let n=n+1 
   done
 
   if [ $ret -ne 0 ]; then
@@ -1637,31 +1640,16 @@ deleteEKScluster() {
 
     # Wait until cluster is deleted
     while true; do
+
       aws eks describe-cluster \
-          --name "$CLUSTER_NAME" \
-          --region "$REGION" \
-          --profile "$PROFILE" >/dev/null 2>&1; ret=$?
+          --name "$EKS_CLUSTER_NAME" \
+          --region "$AWS_REGION" \
+          --profile "$AWS_PROFILE" >/dev/null 2>&1; ret=$?
 
-aws eks describe-cluster \
-          --name "$CLUSTER_NAME" \
-          --region "$REGION" \
-          --profile "$PROFILE"
-
-aws eks describe-cluster \
-          --name "$CLUSTER_NAME" \
-          --region "$REGION" \
-          --profile "$PROFILE" -o json
-
-echo "XXXXX RET: $ret"
       [ $ret -ne 0 ] && break
       sleep 30
     done
 
-aws eks describe-cluster \
-          --name "$CLUSTER_NAME" \
-          --region "$REGION" \
-          --profile "$PROFILE" -o json
-  
     echo " ▪ EKS Cluster ($EKS_CLUSTER_NAME) sucessfuly deleted"
   else
     echo " ▪ EKS Cluster ($EKS_CLUSTER_NAME) already deleted"
@@ -3101,15 +3089,15 @@ installOpenWebUI() {
 
   APP_NAMESPACE="open-webui"
   APP_INGRESS="webui-ingress"
-  APP_URL="webui.$ROUT53_DOMAIN"
+  APP_URL="webui.$ROUTE53_DOMAIN"
     
   messageTitle "Deploy WebUI Ingress"
   
-  CERT_ARN=$(getCertARN "*.$ROUT53_DOMAIN")
+  CERT_ARN=$(getCertARN "*.$ROUTE53_DOMAIN")
   ret=$?
   if [ $ret -ne 0 -o -z "$CERT_ARN" ]; then
     echo "ERROR: Failed to get Certificate ARN"
-    echo "       => getCertARN \"*.$ROUT53_DOMAIN\""
+    echo "       => getCertARN \"*.$ROUTE53_DOMAIN\""
     return 1
   fi
     
@@ -3159,7 +3147,7 @@ installOpenWebUI() {
     echo " ▪ WebUI Ingress already installed"
   fi
 
-  updateAppDNS "open-webui" "webui" "webui.$ROUT53_DOMAIN" "$ROUT53_HOSTED_ZONE_ID"
+  updateAppDNS "open-webui" "webui" "webui.$ROUTE53_DOMAIN" "$ROUTE53_HOSTED_ZONE_ID"
 
   webui=$(kubectl -n open-webui get ingress webui-ingress -o json | jq -r '.spec.rules[].host') 
   mgmui=$(kubectl -n fortiaigate get ingress fortiaigate-ingress -o json | jq -r '.status.loadBalancer.ingress[].hostname')
@@ -3200,20 +3188,15 @@ waitForNamespaceDeletion() {
   local interval=10
   local elapsed=0
 
-  messageTitle "Waiting for namespace deletion ($ns)"
-
   while true; do
     if ! kubectl get ns "$ns" >/dev/null 2>&1; then
-      echo "  ▪ Namespace $ns deleted"
       return 0
     fi
 
     local phase
     phase=$(kubectl get ns "$ns" -o jsonpath='{.status.phase}' 2>/dev/null || echo "unknown")
-    echo "  ▪ Namespace $ns still exists (phase: $phase)"
 
     if [ "$elapsed" -ge "$timeout" ]; then
-      echo "  ▪ Timeout waiting for namespace $ns deletion"
       return 1
     fi
 
@@ -3221,4 +3204,63 @@ waitForNamespaceDeletion() {
     elapsed=$((elapsed + interval))
   done
 }
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: deleteNamespace
+# Function Purpose ...: Delete a Kubernetes Namespace
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: Namespace
+# ------------------------------------------------------------------------------------------
+# Return Value .......: 0 - Success, 1 - Failed
+# ------------------------------------------------------------------------------------------
+deleteNamespace() {
+  NAMESPACE=$1
+  
+  [ "$NAMESPACE" == "default" ] && return
+
+  nam=$NAMESPACE
+  while [ "$nam" == "$NAMESPACE" ]; do
+    kubectl get ns -o json > /tmp/output.json
+    if [ -s /tmp/output.json ]; then
+      nam=$(jq -r --arg key "$NAMESPACE" '.items[] | select(.metadata.name == $key).metadata.name' /tmp/output.json)
+  
+      if [ "$nam" != "" ]; then
+        _stt=$(jq -r --arg key "$NAMESPACE" '.items[] | select(.metadata.name == $key).status.phase' /tmp/output.json)
+        if [ "$_stt" == "Terminating" ]; then
+          kubectl get ns $NAMESPACE -o json | \
+                  jq -r '. | select(.spec.finalizers[] == "kubernetes").spec.finalizers |= []' > /tmp/namespace.json
+          kubectl replace --raw "/api/v1/namespaces/$NAMESPACE/finalize" -f /tmp/namespace.json > /dev/null 2>&1
+        else    
+          kubectl delete ns $NAMESPACE
+        fi
+      fi
+    fi
+  
+    sleep 10
+  done
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: deleteHelmChart
+# Function Purpose ...: Delete a Helm Chart
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: Namespace
+#          ($2) ......: Helm Chart
+# ------------------------------------------------------------------------------------------
+# Return Value .......: 0 - Success, 1 - Failed
+# ------------------------------------------------------------------------------------------
+deleteHelmChart() {
+  NAMESPACE=$1
+  HELMCHART=$2
+
+  helm list -A -o json > /tmp/output.json
+  if [ -s /tmp/output.json ]; then
+    nam=$(jq -r --arg ns "$NAMESPACE" --arg chart "$HELMCHART" '.[] | select(.namespace == $ns and .name == $chart).name' /tmp/output.json)
+
+    if [ "$nam" != "" ]; then
+      helm uninstall -n $NAMESPACE $HELMCHART
+    fi
+  fi
+}
+
 

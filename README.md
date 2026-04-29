@@ -110,10 +110,10 @@ EFS_STORAGE_CLASS="efs-sc-faig"
 AWS_PROFILE="AdministratorAccess-149536468416"
 
 # AWS Rout54 Access Credentials
-ROUT53_DNS_UPDATES="true"
-ROUT53_HOSTED_ZONE_ID="Z0879508I5VL4COU30EV"
-ROUT53_DOMAIN="fortiaigate.fortidemo.ch"
-ROUT53_REGION="eu-central-1"
+ROUTE53_DNS_UPDATES="true"
+ROUTE53_HOSTED_ZONE_ID="Z0879508I5VL4COU30EV"
+ROUTE53_DOMAIN="fortiaigate.fortidemo.ch"
+ROUTE53_REGION="eu-central-1"
 
 # FortiAiGate (FAIG) Configuration
 FAIG_LICENSE_DIR=$HOME/.faig/licenses
