@@ -516,6 +516,12 @@ installALBloadBalancer() {
       exit 1
     fi
 
+    # --------------------------------------------------------------------------------------
+    # Switch to Route53 account and create validation CNAME
+    # --------------------------------------------------------------------------------------
+    preserveAWScontext
+    switchToDNSaccount
+
     # Ensure the IAM policy exists
     aws iam get-policy \
       --policy-arn "arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME" >/dev/null 2>&1; ret=$?
@@ -547,6 +553,11 @@ installALBloadBalancer() {
     else
       echo " ▪ IAM policy already exists"
     fi
+
+    # --------------------------------------------------------------------------------------
+    # Restore original AWS credentials/session
+    # --------------------------------------------------------------------------------------
+    restoreAWScontext
 
     # Create or update the IAM service account
     echo " ▪ create IAM service account aws-load-balancer-controller"
@@ -1132,7 +1143,6 @@ installIngressCertificate() {
 getCertARN() {
   DOMAIN="$1"
 
-#GAGA
   if [ -z "$DOMAIN" ]; then
     echo "ERROR: getCertARN requires a domain" >&2
     exit 1
