@@ -663,6 +663,7 @@ updateAppDNS() {
   # Get ALB hostname from ingress
   # --------------------------------------------------------------------------
   ALB_HOSTNAME=""
+echo "DEBUG: kubectl -n $APP_NAMESPACE get ingress $APP_INGRESS -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'"
   while [ -z "$ALB_HOSTNAME" ]; do 
     ALB_HOSTNAME=$(kubectl -n "$APP_NAMESPACE" get ingress "$APP_INGRESS" \
       -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/tmp/error.log); ret=$?
@@ -3231,7 +3232,7 @@ deleteNamespace() {
                   jq -r '. | select(.spec.finalizers[] == "kubernetes").spec.finalizers |= []' > /tmp/namespace.json
           kubectl replace --raw "/api/v1/namespaces/$NAMESPACE/finalize" -f /tmp/namespace.json > /dev/null 2>&1
         else    
-          kubectl delete ns $NAMESPACE
+          kubectl delete ns $NAMESPACE > /tmp/error.log 2>&1; ret=$?
         fi
       fi
     fi
@@ -3258,7 +3259,14 @@ deleteHelmChart() {
     nam=$(jq -r --arg ns "$NAMESPACE" --arg chart "$HELMCHART" '.[] | select(.namespace == $ns and .name == $chart).name' /tmp/output.json)
 
     if [ "$nam" != "" ]; then
-      helm uninstall -n $NAMESPACE $HELMCHART
+      helm uninstall -n $NAMESPACE $HELMCHART > /tmp/error.log 2>&1; ret=$?
+
+      if [ $ret -ne 0 ]; then
+        logMessages /tmp/error.log
+        echo "ERROR: Deleting Helm Chart $HELMCHART"
+        echo "       => helm uninstall -n $NAMESPACE $HELMCHART"
+        exit 1
+      fi
     fi
   fi
 }
