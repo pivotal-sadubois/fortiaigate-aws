@@ -928,8 +928,15 @@ deployApp() {
 # Return Value .......: Sets CERT_ARN
 # ------------------------------------------------------------------------------------------
 installIngressCertificate() {
+#GAGA
   # Skip this function if ROUTE53_DNS_UPDATES is disabled
   [ "$ROUTE53_DNS_UPDATES" == "false" ] && return
+
+  # --------------------------------------------------------------------------------------
+  # Switch to Route53 account and create validation CNAME
+  # --------------------------------------------------------------------------------------
+  preserveAWScontext
+  switchToDNSaccount
 
   HOSTED_ZONE_ID="$1"
   ALB_REGION="$AWS_REGION"
@@ -1036,11 +1043,12 @@ installIngressCertificate() {
     echo " ▪ VALIDATION_NAME .....: $VALIDATION_NAME"
     echo " ▪ VALIDATION_VALUE ....: $VALIDATION_VALUE"
 
+#GAGA
     # --------------------------------------------------------------------------------------
     # Switch to Route53 account and create validation CNAME
     # --------------------------------------------------------------------------------------
-    preserveAWScontext
-    switchToDNSaccount
+    #preserveAWScontext
+    #switchToDNSaccount
 
     export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION
     [ -n "${AWS_SESSION_TOKEN:-}" ] && export AWS_SESSION_TOKEN
@@ -1068,11 +1076,6 @@ installIngressCertificate() {
       echo "       => aws route53 change-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID ..."
       return 1
     fi
-
-    # --------------------------------------------------------------------------------------
-    # Restore original AWS credentials/session
-    # --------------------------------------------------------------------------------------
-    restoreAWScontext
 
     # --------------------------------------------------------------------------------------
     # Wait until certificate becomes ISSUED
@@ -1110,6 +1113,11 @@ installIngressCertificate() {
     echo " ▪ Valid ACM certificate already exists"
     echo " ▪ CERT_ARN ............: $CERT_ARN"
   fi
+
+  # --------------------------------------------------------------------------------------
+  # Restore original AWS credentials/session
+  # --------------------------------------------------------------------------------------
+  restoreAWScontext
 }
 
 # ------------------------------------------------------------------------------------------
