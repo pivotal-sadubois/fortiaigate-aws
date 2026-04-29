@@ -1132,10 +1132,17 @@ installIngressCertificate() {
 getCertARN() {
   DOMAIN="$1"
 
+#GAGA
   if [ -z "$DOMAIN" ]; then
     echo "ERROR: getCertARN requires a domain" >&2
     exit 1
   fi
+
+  # --------------------------------------------------------------------------------------
+  # Switch to Route53 account and create validation CNAME
+  # --------------------------------------------------------------------------------------
+  preserveAWScontext
+  switchToDNSaccount
 
   aws acm list-certificates \
     --region "$AWS_REGION" \
@@ -1146,6 +1153,11 @@ getCertARN() {
       | map(select(.DomainName == $domain))
       | .[0].CertificateArn // empty
     '
+
+  # --------------------------------------------------------------------------------------
+  # Restore original AWS credentials/session 
+  # --------------------------------------------------------------------------------------
+  restoreAWScontext
 }
 
 # ------------------------------------------------------------------------------------------
