@@ -2399,8 +2399,13 @@ installFAIGchart() {
   # ----------------------------------------------------------------------------------------
   if [ -f $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml ]; then 
     echo " ▪ Fixing License Validation Bug (build0004)"
-    sed -i '' 's+triton-models:[0-9].*$+triton-models:{{ .Values.fortiaigate.image.tag }}+g' $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml
-    sed -i '' 's+custom-triton:[0-9].*$+custom-triton:{{ .Values.fortiaigate.image.tag }}+g' $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml
+    if [ "$(uname)" == "Darwin" ]; then 
+      sed -i '' 's+triton-models:[0-9].*$+triton-models:{{ .Values.fortiaigate.image.tag }}+g' $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml
+      sed -i '' 's+custom-triton:[0-9].*$+custom-triton:{{ .Values.fortiaigate.image.tag }}+g' $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml
+    else
+      sed -i 's+triton-models:[0-9].*$+triton-models:{{ .Values.fortiaigate.image.tag }}+g' $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml
+      sed -i 's+custom-triton:[0-9].*$+custom-triton:{{ .Values.fortiaigate.image.tag }}+g' $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml
+    fi
   else
     echo "ERROR: File $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml does not exist"
     exit 1
