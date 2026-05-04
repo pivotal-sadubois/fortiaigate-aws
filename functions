@@ -2380,12 +2380,17 @@ installFAIGchart() {
   # Unpack Helm Chart
   # ----------------------------------------------------------------------------------------
   CHARTFILE=$(ls -1 $ECR_FORTIAIGATE_SOURCE_DIR/FAIG_helm_chart*.tar)
+  CHARTFILE_GZIP=$(ls -1 $ECR_FORTIAIGATE_SOURCE_DIR/FAIG_helm_chart*.tar.gz)
 
   if [ -f "$CHARTFILE" ]; then 
     tar xf $CHARTFILE -C $ECR_STAGEDIR
   else
-    echo "ERROR: Helm Chart file ($CHARTFILE) not found"
-    exit 1
+    if [ -f "$CHARTFILE_GZIP" ]; then
+      tar xfz $CHARTFILE_GZIP -C $ECR_STAGEDIR
+    else
+      echo "ERROR: Helm Chart file ($CHARTFILE) and ($CHARTFILE_GZIP) not found"
+      exit 1
+    fi
   fi
 
   # ----------------------------------------------------------------------------------------
