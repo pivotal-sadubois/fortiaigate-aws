@@ -93,20 +93,6 @@ checkLocalConfig() {
     fi
   fi
 
-  if [ "$ROUTE53_SEPERATE_ACCOUNT" == "true" -o "$ROUTE53_SEPERATE_ACCOUNT" == "True" -o "$ROUTE53_SEPERATE_ACCOUNT" == "TRUE" ]; then
-    if [ -z "$ROUTE53_ACCESS_KEY_ID" -o -z "$ROUTE53_SECRET_ACCESS_KEY" ]; then 
-      local missing_variables=1
-      echo ""
-      echo "  MISSING ENVIRONMENT-VARIABES          DESCRIPTION        "
-      echo "  -------------------------------------------------------------------------------------------------------------------------------------------------------"
-    
-      if [ -z "${ROUTE53_ACCESS_KEY_ID}" ]; then
-        echo "  ROUTE53_ACCESS_KEY_ID                  (required) AWS Access Key"
-        echo "  ROUTE53_SECRET_ACCESS_KEY              (required) AWS Secret Access Key"
-      fi
-    fi
-  fi
-
   if [ ! -f $HOME/.faig/config ]; then
     echo "export AWS_REGION=\"\""                              >  $HOME/.faig/config
     echo "EKS_CLUSTER_NAME=\"\""                               >> $HOME/.faig/config
@@ -120,7 +106,6 @@ checkLocalConfig() {
     echo "ROUTE53_DNS_UPDATES=\"false\""                        >> $HOME/.faig/config
     echo "ROUTE53_REGION=\"\""                                  >> $HOME/.faig/config
     echo "ROUTE53_ACCESS_KEY_ID=\"\""                           >> $HOME/.faig/config
-    echo "ROUTE53_SEPERATE_ACCOUNT=\"false\""                   >> $HOME/.faig/config
     echo "ROUTE53_SECRET_ACCESS_KEY=\"\""                       >> $HOME/.faig/config
     echo "ROUTE53_HOSTED_ZONE_ID=\"\""                          >> $HOME/.faig/config
     echo "ROUTE53_DOMAIN=\"\""                                  >> $HOME/.faig/config
@@ -316,11 +301,6 @@ verifyAWSRoute53credentials() {
   # --------------------------------------------------------------------------------------
   # Switch to Route53 account and create validation CNAME
   # --------------------------------------------------------------------------------------
-  if [ "$ROUTE53_SEPERATE_ACCOUNT" == "true" -o "$ROUTE53_SEPERATE_ACCOUNT" == "True" -o "$ROUTE53_SEPERATE_ACCOUNT" == "TRUE" ]; then
-    preserveAWScontext
-    switchToDNSaccount
-  fi
-
   aws sts get-caller-identity > /dev/null 2>&1; ret=$?
   if [ $ret -ne 0 ]; then
     echo "XXX1 ERROR: Invalid Credentials or credentials have expired"
@@ -338,10 +318,6 @@ verifyAWSRoute53credentials() {
     echo " ▪ AWS Account ........: $AWS_ACCOUNT"
     echo " ▪ AWS ARN ............: $AWS_ARN"
     echo " ▪ AWS REGION .........: $AWS_REGION"
-  fi
-
-  if [ "$ROUTE53_SEPERATE_ACCOUNT" == "true" -o "$ROUTE53_SEPERATE_ACCOUNT" == "True" -o "$ROUTE53_SEPERATE_ACCOUNT" == "TRUE" ]; then
-    restoreAWScontext
   fi
 }
 
@@ -516,12 +492,6 @@ installALBloadBalancer() {
       exit 1
     fi
 
-    # --------------------------------------------------------------------------------------
-    # Switch to Route53 account and create validation CNAME
-    # --------------------------------------------------------------------------------------
-    preserveAWScontext
-    switchToDNSaccount
-
     # Ensure the IAM policy exists
     aws iam get-policy \
       --policy-arn "arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME" >/dev/null 2>&1; ret=$?
@@ -553,11 +523,6 @@ installALBloadBalancer() {
     else
       echo " ▪ IAM policy already exists"
     fi
-
-    # --------------------------------------------------------------------------------------
-    # Restore original AWS credentials/session
-    # --------------------------------------------------------------------------------------
-    restoreAWScontext
 
     # Create or update the IAM service account
     echo " ▪ create IAM service account aws-load-balancer-controller"
@@ -648,7 +613,7 @@ installALBloadBalancer() {
 # Argument ($1) ......: <namespace>
 # Argument ($2) ......: <fqdn>
 # Argument ($3) ......: <hosted-zone-id>
-# Dependancies: ......: kubectl, preserveAWScontext, switchToDNSaccount, restoreAWScontext
+# Dependancies: ......: kubectl
 # ------------------------------------------------------------------------------------------
 # Return Value .......: none (exit on error)
 # ------------------------------------------------------------------------------------------
@@ -694,67 +659,104 @@ echo "DEBUG: kubectl -n $APP_NAMESPACE get ingress $APP_INGRESS -o jsonpath='{.s
   echo " ▪ APP_INGRESS .........: $APP_INGRESS"
   echo " ▪ ALB_HOSTNAME ........: $ALB_HOSTNAME"
 
-  # --------------------------------------------------------------------------
-  # Switch to DNS account
-  # --------------------------------------------------------------------------
-  if [ "$ROUTE53_SEPERATE_ACCOUNT" == "true" -o "$ROUTE53_SEPERATE_ACCOUNT" == "True" -o "$ROUTE53_SEPERATE_ACCOUNT" == "TRUE" ]; then
-    preserveAWScontext
-    switchToDNSaccount
-  fi
+  DNS_TARGET=$(aws route53 list-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID --profile "$AWS_PROFILE" --no-cli-pager | \
+             jq -r --arg key "${APP_FQDN}." '.ResourceRecordSets[] | select(.Name == $key).Name')
+
+echo "XXX DNS_TARGET: $DNS_TARGET"
 
   # --------------------------------------------------------------------------
-  # Read current Route53 target before change
+  # No DNS Record set yet
   # --------------------------------------------------------------------------
-  OLD_DNS_TARGET=$(aws route53 list-resource-record-sets \
-    --hosted-zone-id "$HOSTED_ZONE_ID" \
-    --query "ResourceRecordSets[?Name == '${APP_FQDN}.'].ResourceRecords[0].Value" \
-    --output text 2>/tmp/error.log); ret=$?
+  if [ "$DNS_TARGET" == "" ]; then 
+    # --------------------------------------------------------------------------
+    # Create / Update DNS Record
+    # --------------------------------------------------------------------------
+    CHANGE_ID=$(aws route53 change-resource-record-sets \
+      --hosted-zone-id "$HOSTED_ZONE_ID" \
+      --change-batch "{
+        \"Changes\": [{
+          \"Action\": \"UPSERT\",
+          \"ResourceRecordSet\": {
+            \"Name\": \"$APP_FQDN\",
+            \"Type\": \"CNAME\",
+            \"TTL\": 300,
+            \"ResourceRecords\": [{
+              \"Value\": \"$ALB_HOSTNAME\"
+            }]
+          }
+        }]
+      }" \
+      --query 'ChangeInfo.Id' \
+      --output text 2>/tmp/error.log); ret=$?
 
-  if [ $ret -ne 0 ]; then
-    restoreAWScontext
-    logMessages /tmp/error.log
-    echo "ERROR: Failed to read current Route53 DNS record"
-    echo "       => aws route53 list-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID"
-    exit 1
-  fi
+    if [ $ret -ne 0 -o -z "$CHANGE_ID" -o "$CHANGE_ID" = "None" ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Creating Route53 CNAME failed"
+      echo "       => aws route53 change-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID ..."
+      exit 1
+    fi
+#gaga
 
-  # No Change needed
-  if [ "$OLD_DNS_TARGET" == "$NEW_DNS_TARGET" ]; then 
-    restoreAWScontext
-    return
-  fi
+  else
+    # --------------------------------------------------------------------------
+    # Read current Route53 target before change
+    # --------------------------------------------------------------------------
+    OLD_DNS_TARGET=$(aws route53 list-resource-record-sets \
+      --hosted-zone-id "$HOSTED_ZONE_ID" \
+      --query "ResourceRecordSets[?Name == '${APP_FQDN}.'].ResourceRecords[0].Value" \
+      --output text 2>/tmp/error.log); ret=$?
 
-  [ "$OLD_DNS_TARGET" = "None" ] && OLD_DNS_TARGET=""
-  echo " ▪ OLD_DNS_TARGET ......: $OLD_DNS_TARGET"
-  echo " ▪ NEW_DNS_TARGET ......: $ALB_HOSTNAME"
+  echo "APP_FQDN:$APP_FQDN"
 
-  # --------------------------------------------------------------------------
-  # Create / Update DNS Record
-  # --------------------------------------------------------------------------
-  CHANGE_ID=$(aws route53 change-resource-record-sets \
-    --hosted-zone-id "$HOSTED_ZONE_ID" \
-    --change-batch "{
-      \"Changes\": [{
-        \"Action\": \"UPSERT\",
-        \"ResourceRecordSet\": {
-          \"Name\": \"$APP_FQDN\",
-          \"Type\": \"CNAME\",
-          \"TTL\": 300,
-          \"ResourceRecords\": [{
-            \"Value\": \"$ALB_HOSTNAME\"
-          }]
-        }
-      }]
-    }" \
-    --query 'ChangeInfo.Id' \
-    --output text 2>/tmp/error.log); ret=$?
+  echo "aws route53 list-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID --query \"ResourceRecordSets[?Name == '${APP_FQDN}.'].ResourceRecords[0].Value\""
+  echo "OLD_DNS_TARGET:$OLD_DNS_TARGET RET:$ret"
 
-  if [ $ret -ne 0 -o -z "$CHANGE_ID" -o "$CHANGE_ID" = "None" ]; then
-    restoreAWScontext
-    logMessages /tmp/error.log
-    echo "ERROR: Creating Route53 CNAME failed"
-    echo "       => aws route53 change-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID ..."
-    exit 1
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to read current Route53 DNS record"
+      echo "       => aws route53 list-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID"
+      exit 1
+    fi
+
+  echo "OLD_DNS_TARGET:$OLD_DNS_TARGET"
+  echo "NEW_DNS_TARGET:$NEW_DNS_TARGET"
+
+    # No Change needed
+    if [ "$OLD_DNS_TARGET" == "$NEW_DNS_TARGET" ]; then 
+      return
+    fi
+
+    [ "$OLD_DNS_TARGET" = "None" ] && OLD_DNS_TARGET=""
+    echo " ▪ OLD_DNS_TARGET ......: $OLD_DNS_TARGET"
+    echo " ▪ NEW_DNS_TARGET ......: $ALB_HOSTNAME"
+
+    # --------------------------------------------------------------------------
+    # Create / Update DNS Record
+    # --------------------------------------------------------------------------
+    CHANGE_ID=$(aws route53 change-resource-record-sets \
+      --hosted-zone-id "$HOSTED_ZONE_ID" \
+      --change-batch "{
+        \"Changes\": [{
+          \"Action\": \"UPSERT\",
+          \"ResourceRecordSet\": {
+            \"Name\": \"$APP_FQDN\",
+            \"Type\": \"CNAME\",
+            \"TTL\": 300,
+            \"ResourceRecords\": [{
+              \"Value\": \"$ALB_HOSTNAME\"
+            }]
+          }
+        }]
+      }" \
+      --query 'ChangeInfo.Id' \
+      --output text 2>/tmp/error.log); ret=$?
+
+    if [ $ret -ne 0 -o -z "$CHANGE_ID" -o "$CHANGE_ID" = "None" ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Creating Route53 CNAME failed"
+      echo "       => aws route53 change-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID ..."
+      exit 1
+    fi
   fi
 
   echo " ▪ Route53 Change ID ...: $CHANGE_ID"
@@ -772,7 +774,6 @@ echo "DEBUG: kubectl -n $APP_NAMESPACE get ingress $APP_INGRESS -o jsonpath='{.s
       --output text 2>/tmp/error.log); ret=$?
 
     if [ $ret -ne 0 ]; then
-      restoreAWScontext
       logMessages /tmp/error.log
       echo "ERROR: Failed to get Route53 change status"
       echo "       => aws route53 get-change --id $CHANGE_ID"
@@ -787,7 +788,6 @@ echo "DEBUG: kubectl -n $APP_NAMESPACE get ingress $APP_INGRESS -o jsonpath='{.s
   done
 
   if [ "$STATUS" != "INSYNC" ]; then
-    restoreAWScontext
     echo "ERROR: Route53 change did not become INSYNC"
     echo "       Change ID .......: $CHANGE_ID"
     exit 1
@@ -802,7 +802,6 @@ echo "DEBUG: kubectl -n $APP_NAMESPACE get ingress $APP_INGRESS -o jsonpath='{.s
     --output text 2>/tmp/error.log); ret=$?
 
   if [ $ret -ne 0 -o -z "$FINAL_DNS_TARGET" -o "$FINAL_DNS_TARGET" = "None" ]; then
-    restoreAWScontext
     logMessages /tmp/error.log
     echo "ERROR: Failed to verify final Route53 DNS record"
     echo "       => aws route53 list-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID"
@@ -812,15 +811,10 @@ echo "DEBUG: kubectl -n $APP_NAMESPACE get ingress $APP_INGRESS -o jsonpath='{.s
   echo " ▪ FINAL_DNS_TARGET ....: $FINAL_DNS_TARGET"
 
   if [ "$FINAL_DNS_TARGET" != "$ALB_HOSTNAME" ]; then
-    restoreAWScontext
     echo "ERROR: Route53 record does not match current ALB hostname"
     echo "       Expected ........: $ALB_HOSTNAME"
     echo "       Found ...........: $FINAL_DNS_TARGET"
     exit 1
-  fi
-
-  if [ "$ROUTE53_SEPERATE_ACCOUNT" == "true" -o "$ROUTE53_SEPERATE_ACCOUNT" == "True" -o "$ROUTE53_SEPERATE_ACCOUNT" == "TRUE" ]; then
-    restoreAWScontext
   fi
 
   # --------------------------------------------------------------------------
@@ -930,24 +924,17 @@ deployApp() {
 }
 
 # ------------------------------------------------------------------------------------------
-# Function Name ......: installIngressCertificate
-# Function Purpose ...: Install the Ingress Certificate for the ALB Load Balancer
+# Function Name ......: requestACMcertificate
+# Function Purpose ...: Issue ACM Certificate
 # ------------------------------------------------------------------------------------------
 # Argument ($1) ......: <route53-hosted-zone-id>
 # Dependancies: ......: AWS_REGION, EKS_CLUSTER_NAME
 # ------------------------------------------------------------------------------------------
 # Return Value .......: Sets CERT_ARN
 # ------------------------------------------------------------------------------------------
-installIngressCertificate() {
-#GAGA
+requestACMcertificate() {
   # Skip this function if ROUTE53_DNS_UPDATES is disabled
   [ "$ROUTE53_DNS_UPDATES" == "false" ] && return
-
-  # --------------------------------------------------------------------------------------
-  # Switch to Route53 account and create validation CNAME
-  # --------------------------------------------------------------------------------------
-  preserveAWScontext
-  switchToDNSaccount
 
   HOSTED_ZONE_ID="$1"
   ALB_REGION="$AWS_REGION"
@@ -955,11 +942,11 @@ installIngressCertificate() {
   CERT_SAN="$ROUTE53_DOMAIN"
 
   messageTitle "Ingress Certificate for ALB Load Balancer"
-
+  
   if [ -z "$HOSTED_ZONE_ID" ]; then
     echo "ERROR: Missing Route53 Hosted Zone ID"
     echo "       => installIngressCertificate <route53-hosted-zone-id>"
-    return 1
+    exit 0
   fi
 
   # ----------------------------------------------------------------------------------------
@@ -968,6 +955,7 @@ installIngressCertificate() {
   CERT_ARN=$(aws acm list-certificates \
     --region "$ALB_REGION" \
     --certificate-statuses ISSUED \
+    --profile "$AWS_PROFILE" \
     --output json 2>/tmp/error.log | jq -r --arg domain "$CERT_DOMAIN" '
       .CertificateSummaryList
       | map(select(.DomainName == $domain))
@@ -976,9 +964,9 @@ installIngressCertificate() {
 
   if [ $ret -ne 0 ]; then
     logMessages /tmp/error.log
-    echo "ERROR: Failed to check existing ACM certificates"
-    echo "       => aws acm list-certificates --region $ALB_REGION --certificate-statuses ISSUED"
-    return 1
+    echo "ERROR: Failed to check existing ACM certificates 11"
+    echo "       => aws acm list-certificates --region $ALB_REGION --certificate-statuses ISSUED --profile $AWS_PROFILE"
+    exit 1
   fi
 
   if [ -n "$CERT_ARN" ]; then
@@ -989,6 +977,7 @@ installIngressCertificate() {
       --certificate-arn "$CERT_ARN" \
       --region "$ALB_REGION" \
       --query 'Certificate.SubjectAlternativeNames' \
+      --profile "$AWS_PROFILE" \
       --output json 2>/tmp/error.log | jq -r --arg san "$CERT_SAN" '
         if index($san) then "yes" else "no" end
       '); ret=$?
@@ -1007,6 +996,8 @@ installIngressCertificate() {
     fi
   fi
 
+# aws acm list-certificates --region eu-north-1 --profile AdministratorAccess-149536468416
+
   # ----------------------------------------------------------------------------------------
   # Request new certificate if none exists
   # ----------------------------------------------------------------------------------------
@@ -1017,15 +1008,16 @@ installIngressCertificate() {
       --domain-name "$CERT_DOMAIN" \
       --subject-alternative-names "$CERT_SAN" \
       --validation-method DNS \
+      --profile "$AWS_PROFILE" \
       --region "$ALB_REGION" \
       --query 'CertificateArn' \
-      --output text > /tmp/error.log 2>&1); ret=$?
+      --output text); ret=$?
 
     if [ $ret -ne 0 -o -z "$CERT_ARN" ]; then
       logMessages /tmp/error.log
       echo "ERROR: Requesting ACM certificate failed"
-      echo "       => aws acm request-certificate --domain-name $CERT_DOMAIN --subject-alternative-names $CERT_SAN --validation-method DNS --region $ALB_REGION"
-      return 1
+      echo "       => aws acm request-certificate --domain-name $CERT_DOMAIN --subject-alternative-names $CERT_SAN --validation-method DNS --region $ALB_REGION --profile $AWS_PROFILE"
+      exit 0
     fi
 
     echo " ▪ CERT_ARN ............: $CERT_ARN"
@@ -1036,6 +1028,7 @@ installIngressCertificate() {
     read -r VALIDATION_NAME VALIDATION_VALUE <<< "$(aws acm describe-certificate \
       --certificate-arn "$CERT_ARN" \
       --region "$ALB_REGION" \
+      --profile "$AWS_PROFILE" \
       --query 'Certificate.DomainValidationOptions[].ResourceRecord' \
       --output json 2>/tmp/error.log | jq -r '
         map(select(.Name != null and .Value != null))
@@ -1054,19 +1047,13 @@ installIngressCertificate() {
     echo " ▪ VALIDATION_NAME .....: $VALIDATION_NAME"
     echo " ▪ VALIDATION_VALUE ....: $VALIDATION_VALUE"
 
-#GAGA
-    # --------------------------------------------------------------------------------------
-    # Switch to Route53 account and create validation CNAME
-    # --------------------------------------------------------------------------------------
-    #preserveAWScontext
-    #switchToDNSaccount
-
     export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION
     [ -n "${AWS_SESSION_TOKEN:-}" ] && export AWS_SESSION_TOKEN
 
     echo " ▪ Create/Update Route53 validation CNAME"
     aws route53 change-resource-record-sets \
       --hosted-zone-id "$HOSTED_ZONE_ID" \
+      --profile "$AWS_PROFILE" \
       --change-batch "{
         \"Changes\": [{
           \"Action\": \"UPSERT\",
@@ -1096,6 +1083,7 @@ installIngressCertificate() {
       CERT_STATUS=$(aws acm describe-certificate \
         --certificate-arn "$CERT_ARN" \
         --region "$ALB_REGION" \
+        --profile "$AWS_PROFILE" \
         --query 'Certificate.Status' \
         --output text 2>/tmp/error.log); ret=$?
 
@@ -1124,11 +1112,6 @@ installIngressCertificate() {
     echo " ▪ Valid ACM certificate already exists"
     echo " ▪ CERT_ARN ............: $CERT_ARN"
   fi
-
-  # --------------------------------------------------------------------------------------
-  # Restore original AWS credentials/session
-  # --------------------------------------------------------------------------------------
-  restoreAWScontext
 }
 
 # ------------------------------------------------------------------------------------------
@@ -1148,12 +1131,6 @@ getCertARN() {
     exit 1
   fi
 
-  # --------------------------------------------------------------------------------------
-  # Switch to Route53 account and create validation CNAME
-  # --------------------------------------------------------------------------------------
-  preserveAWScontext
-  switchToDNSaccount
-
   aws acm list-certificates \
     --region "$AWS_REGION" \
     --certificate-statuses ISSUED \
@@ -1163,11 +1140,6 @@ getCertARN() {
       | map(select(.DomainName == $domain))
       | .[0].CertificateArn // empty
     '
-
-  # --------------------------------------------------------------------------------------
-  # Restore original AWS credentials/session 
-  # --------------------------------------------------------------------------------------
-  restoreAWScontext
 }
 
 # ------------------------------------------------------------------------------------------
@@ -1265,51 +1237,6 @@ deployDemoApp() {
   done
 
   echo " ▪ Ingress Address .....: $INGRESS_ADDR"
-}
-
-# ------------------------------------------------------------------------------------------
-# Function Name ......: preserveAWScontext
-# Function Purpose ...: Preserve current AWS credentials/session
-# ------------------------------------------------------------------------------------------
-preserveAWScontext() {
-  PRESERVED_AWS_PROFILE="${AWS_PROFILE:-}"
-  PRESERVED_AWS_REGION="${AWS_REGION:-}"
-}
-
-# ------------------------------------------------------------------------------------------
-# Function Name ......: restoreAWScontext
-# Function Purpose ...: Restore current AWS credentials/session
-# ------------------------------------------------------------------------------------------
-restoreAWScontext() {
-  unset AWS_SESSION_TOKEN AWS_SECRET_ACCESS_KEY AWS_ACCESS_KEY_ID
-
-  if [ -n "${PRESERVED_AWS_PROFILE:-}" ]; then
-    export AWS_PROFILE="$PRESERVED_AWS_PROFILE"
-    export PROFILE="$PRESERVED_AWS_PROFILE"
-  else
-    unset AWS_PROFILE
-  fi
-
-  if [ -n "${PRESERVED_AWS_REGION:-}" ]; then
-    export AWS_REGION="$PRESERVED_AWS_REGION"
-  else
-    unset AWS_REGION
-  fi
-}
-
-# ------------------------------------------------------------------------------------------
-# Function Name ......: switchToDNSaccount
-# Function Purpose ...: Load Route53 account credentials
-# ------------------------------------------------------------------------------------------
-switchToDNSaccount() {
-  unset AWS_SESSION_TOKEN
-
-  AWS_ACCESS_KEY_ID=$ROUTE53_ACCESS_KEY_ID
-  AWS_SECRET_ACCESS_KEY=$ROUTE53_SECRET_ACCESS_KEY
-  AWS_REGION=$ROUTE53_REGION
-
-  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION
-  [ -n "${AWS_SESSION_TOKEN:-}" ] && export AWS_SESSION_TOKEN
 }
 
 # ------------------------------------------------------------------------------------------
@@ -3144,7 +3071,6 @@ installOpenWebUI() {
     echo " ▪ Helm Repo https://aws.github.io/eks-charts already installed"
   fi
 
-#gaga1
   stt=$(helm list -n open-webui -o json | jq -r --arg key "open-webui" '.[] | select(.name == $key).status')
   if [ "$stt" != "deployed" ]; then
     echo " ▪ Install / upgrade ....: open-webui"

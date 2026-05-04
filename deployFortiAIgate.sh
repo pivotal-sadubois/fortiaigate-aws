@@ -23,13 +23,13 @@ verifyOrLoginSSO
 verifyEksctlCredentials
 verifyCLIutils deploy
 verifyAWScredentials
-verifyAWSRoute53credentials
+#verifyAWSRoute53credentials
+requestACMcertificate "$ROUTE53_HOSTED_ZONE_ID"
 
 installEKSCluster
 #installNodeGroup
 #installEFSstorageClass
 installALBloadBalancer
-installIngressCertificate "$ROUTE53_HOSTED_ZONE_ID"
 
 deployDemoApp
 updateAppDNS "demo-app" "demo-app" "demo.$ROUTE53_DOMAIN" "$ROUTE53_HOSTED_ZONE_ID"
