@@ -2379,13 +2379,18 @@ installFAIGchart() {
   # ----------------------------------------------------------------------------------------
   # Unpack Helm Chart
   # ----------------------------------------------------------------------------------------
-  CHARTFILE=$(ls -1 $ECR_FORTIAIGATE_SOURCE_DIR/FAIG_helm_chart*.tar)
-  CHARTFILE_GZIP=$(ls -1 $ECR_FORTIAIGATE_SOURCE_DIR/FAIG_helm_chart*.tar.gz)
+  CHARTFILE=$(ls -1 $ECR_FORTIAIGATE_SOURCE_DIR/FAIG_helm_chart*.tar 2>/dev/null)
+  CHARTFILE_GZIP=$(ls -1 $ECR_FORTIAIGATE_SOURCE_DIR/FAIG_helm_chart*.tar.gz 2>/dev/null)
+
+echo "DEBUG: CHARTFILE: $CHARTFILE"
+echo "DEBUG: CHARTFILE_GZIP: $CHARTFILE_GZIP"
 
   if [ -f "$CHARTFILE" ]; then 
+echo "DEBUG: tar xf $CHARTFILE -C $ECR_STAGEDIR"
     tar xf $CHARTFILE -C $ECR_STAGEDIR
   else
     if [ -f "$CHARTFILE_GZIP" ]; then
+echo "tar xfz $CHARTFILE_GZIP -C $ECR_STAGEDIR"
       tar xfz $CHARTFILE_GZIP -C $ECR_STAGEDIR
     else
       echo "ERROR: Helm Chart file ($CHARTFILE) and ($CHARTFILE_GZIP) not found"
@@ -2393,12 +2398,19 @@ installFAIGchart() {
     fi
   fi
 
+echo "DEBUG: $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml"
+
   # ----------------------------------------------------------------------------------------
   # 12.7 Fix 7: License Validation Bug (build0004)
   # https://github.com/asameli-ftnt/fortiaigate-doc?tab=readme-ov-file#128-fix-8-triton-hardcoded-image-tags-build0012
   # ----------------------------------------------------------------------------------------
-  sed -i '' 's+triton-models:[0-9].*$+triton-models:{{ .Values.fortiaigate.image.tag }}+g' $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml
-  sed -i '' 's+custom-triton:[0-9].*$+custom-triton:{{ .Values.fortiaigate.image.tag }}+g' $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml
+  if [ ! -f $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml ]; then 
+    sed -i '' 's+triton-models:[0-9].*$+triton-models:{{ .Values.fortiaigate.image.tag }}+g' $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml
+    sed -i '' 's+custom-triton:[0-9].*$+custom-triton:{{ .Values.fortiaigate.image.tag }}+g' $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml
+  else
+    echo "ERROR: File $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml does not exist"
+    exit 1
+  fi
 
   # ----------------------------------------------------------------------------------------
   # 12.2 Fix 2: Triton GPU Node Affinity
