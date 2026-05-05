@@ -2473,7 +2473,7 @@ installFAIGchart() {
   if [ "$stt" != "deployed" ]; then 
     echo " ▪ Install Helm Chart (fortiaigate)" 
     helm upgrade --install fortiaigate ${ECR_STAGEDIR}/fortiaigate -n fortiaigate -f /tmp/values.yaml \
-                 --create-namespace --wait --wait-for-jobs --timeout 20m0s >  /tmp/error.log 2>&1; ret=$?
+                 --create-namespace --wait --wait-for-jobs --timeout 1h >  /tmp/error.log 2>&1; ret=$?
     if [ $ret -ne 0 ]; then
       logMessages /tmp/error.log
       echo "ERROR: Failed to install Helm chart fortiaigate"
