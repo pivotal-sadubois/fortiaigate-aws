@@ -134,16 +134,16 @@ If the browser does not open or you wish to use a different device to authorize 
 https://oidc.us-west-2.amazonaws.com/authorize?response_type=code&client_id=2be1gszgrBlV7JgPuwLlB3VzLXdlc3QtMg&redirect_uri=http%3A%2F%2F127.0.0.1%3A55061%2Foauth%2Fcallback&state=d369ffef-11df-4d4a-ab73-2663c133ea7e&code_challenge_method=S256&scopes=sso%3Aaccount%3Aaccess&code_challenge=YXtV4TP8SEM-JeTR9qkfgtLlId9B4kQMO1hLCIs-GhA
 Successfully logged into Start URL: https://fortinet-prod.awsapps.com/start/#
 ------------------------------------------------------------------------------------------------------------------------------------------------------
-AWS SSO login successful (profile: AdministratorAccess-149536468416)
+AWS SSO login successful (profile: AdministratorAccess-xyz)
 Verify Installed CLI Utilities
  ▪ AWS CLI ............: aws-cli/2.22.33 Python/3.12.8 Darwin/24.6.0 source/arm64
  ▪ EKS CLI ............: 0.224.0
  ▪ JQ .................: jq-1.7.1
  ▪ skopeo .............: skopeo version 1.17.0
 AWS Credentials Access verified
- ▪ AWS User ID ........: AROASFUIRNXAC24XONRD5:sdubois@fortinet.com
- ▪ AWS Account ........: 149536468416
- ▪ AWS ARN ............: arn:aws:sts::149536468416:assumed-role/AWSReservedSSO_AdministratorAccess_c3d75e305b4ee569/sdubois@fortinet.com
+ ▪ AWS User ID ........: AROAXXXXXXXXXXXXXXXXX:demouser@example.com
+ ▪ AWS Account ........: 123456789012
+ ▪ AWS ARN ............: arn:aws:sts::123456789012:assumed-role/AWSReservedSSO_AdministratorAccess_xyz/demouser@example.com
  ▪ AWS REGION .........: eu-north-1
 Cleaning up old FortiAIgate Images from the ECR Repository
 
@@ -152,7 +152,7 @@ Cleaning up old FortiAIgate Images from the ECR Repository
 ═══════════════════════════════════════════════════════════════
  TAR directory : /Users/sdubois/Documents/FAIG/build0024
  New tag       : build0024
- ECR registry  : 149536468416.dkr.ecr.eu-north-1.amazonaws.com
+ ECR registry  : 123456789012.dkr.ecr.eu-north-1.amazonaws.com
  AWS region    : eu-north-1
  TAR files     : 9 found
 ═══════════════════════════════════════════════════════════════
