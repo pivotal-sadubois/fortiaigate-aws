@@ -16,8 +16,9 @@ managedNodeGroups:
     privateNetworking: true
 
   - name: gpu-spot-ng
-    instanceType: g4dn.xlarge
+    instanceType: g5.4xlarge
     desiredCapacity: 1
+    spot: false
     minSize: 0
     maxSize: 2
     volumeSize: 200
