@@ -24,8 +24,8 @@ class Pipe:
             description="FortiAIGate API Token (generate in FortiAIGate Admin GUI → System → API Tokens)",
         )
         MODEL_ID: str = Field(
-            default="global.anthropic.claude-sonnet-4-6",
-            description="Model ID configured in FortiAIGate AI Flow",
+            default="faig-default",
+            description="Default AI Model",
         )
         VERIFY_SSL: bool = Field(
             default=False,
@@ -44,8 +44,8 @@ class Pipe:
     def pipes(self):
         return [
             {
-                "id": "fortiaigate-claude-sonnet",
-                "name": "FortiAIGate Claude Sonnet",
+                "id": "fortiaigate-default",
+                "name": "FortiAIGate Default Model",
             }
         ]
  
