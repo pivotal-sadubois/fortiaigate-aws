@@ -1,46 +1,61 @@
 """
 title: FortiAIGate
-author: Adrian
-version: 0.2.0
+author: Adrian / Sacha
+version: 0.3.0
 license: MIT
-description: Secure Pipe function to route Open WebUI requests through FortiAIGate AI Security Gateway with HTTPS and API key authentication
+description: Secure OpenAI-compatible Pipe for FortiAIGate with native tool-calling support
 """
- 
-import requests
+
 import json
 import urllib3
-from typing import Union, Generator
+from typing import Any, Dict, Generator, Union
+
+import requests
 from pydantic import BaseModel, Field
- 
- 
+
+
 class Pipe:
     class Valves(BaseModel):
         FORTIAIGATE_URL: str = Field(
-            default="https://core.fortiaigate.svc.cluster.local:8080/v1/openwebui/v1/chat/completions",
-            description="FortiAIGate chat completions endpoint URL (use https:// for encrypted communication)",
+            default=(
+                "https://core.fortiaigate.svc.cluster.local:8080/"
+                "v1/openwebui/v1/chat/completions"
+            ),
+            description="FortiAIGate OpenAI-compatible chat-completions endpoint",
         )
+
         API_KEY: str = Field(
-            default="<API_KEY>",
-            description="FortiAIGate API Token (generate in FortiAIGate Admin GUI → System → API Tokens)",
+            default="",
+            description="FortiAIGate API token",
         )
+
         MODEL_ID: str = Field(
             default="faig-default",
-            description="Default AI Model",
+            description="FortiAIGate model ID",
         )
+
         VERIFY_SSL: bool = Field(
             default=False,
-            description="Verify SSL certificate (set False for self-signed FortiAIGate certs, True if using a trusted CA)",
+            description="Verify FortiAIGate TLS certificate",
         )
+
         TIMEOUT: int = Field(
             default=120,
             description="Request timeout in seconds",
         )
- 
+
+        DEBUG: bool = Field(
+            default=False,
+            description="Return additional diagnostic information on errors",
+        )
+
     def __init__(self):
         self.valves = self.Valves()
-        # Suppress InsecureRequestWarning when using self-signed certificates
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
- 
+
+        urllib3.disable_warnings(
+            urllib3.exceptions.InsecureRequestWarning
+        )
+
     def pipes(self):
         return [
             {
@@ -48,30 +63,62 @@ class Pipe:
                 "name": "FortiAIGate Default Model",
             }
         ]
- 
-    def pipe(self, body: dict, __user__: dict = None) -> Union[str, Generator]:
-        # Validate API key is configured
+
+    def pipe(
+        self,
+        body: dict,
+        __user__: dict = None,
+    ) -> Union[dict, str, Generator]:
+
         if not self.valves.API_KEY:
-            return (
-                "⚠️ FortiAIGate API key not configured. "
-                "Go to Functions → FortiAIGate → Valves → set API_KEY."
-            )
- 
+            return {
+                "error": {
+                    "message": (
+                        "FortiAIGate API key is not configured. "
+                        "Set API_KEY in the Function valves."
+                    ),
+                    "type": "configuration_error",
+                }
+            }
+
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.valves.API_KEY}",
         }
- 
-        # Build clean payload — exactly like our working curl command
-        payload = {
+
+        #
+        # Preserve the OpenAI-compatible request fields that FortiAIGate
+        # needs, including native tools.
+        #
+        payload: Dict[str, Any] = {
             "model": self.valves.MODEL_ID,
             "messages": body.get("messages", []),
         }
- 
-        stream = body.get("stream", False)
-        if stream:
-            payload["stream"] = True
- 
+
+        forwarded_fields = [
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "max_completion_tokens",
+            "stop",
+            "seed",
+            "frequency_penalty",
+            "presence_penalty",
+            "response_format",
+            "stream_options",
+            "user",
+        ]
+
+        for field in forwarded_fields:
+            if field in body and body[field] is not None:
+                payload[field] = body[field]
+
+        stream = bool(body.get("stream", False))
+        payload["stream"] = stream
+
         try:
             response = requests.post(
                 self.valves.FORTIAIGATE_URL,
@@ -81,56 +128,110 @@ class Pipe:
                 timeout=self.valves.TIMEOUT,
                 verify=self.valves.VERIFY_SSL,
             )
- 
+
             if response.status_code == 401:
-                return "⚠️ Authentication failed (401). Check your API key in Valves settings."
-            elif response.status_code == 403:
-                return (
-                    "⚠️ Access denied (403). Possible causes: "
-                    "invalid API key, network allowlist, or AI Flow not configured."
-                )
-            elif response.status_code != 200:
-                return (
-                    f"FortiAIGate error {response.status_code}: {response.text[:500]}"
-                )
- 
+                return {
+                    "error": {
+                        "message": "FortiAIGate authentication failed.",
+                        "type": "authentication_error",
+                        "code": 401,
+                    }
+                }
+
+            if response.status_code == 403:
+                return {
+                    "error": {
+                        "message": (
+                            "FortiAIGate access denied. Check the API token, "
+                            "network allowlist and AI Flow configuration."
+                        ),
+                        "type": "authorization_error",
+                        "code": 403,
+                    }
+                }
+
+            if response.status_code != 200:
+                return {
+                    "error": {
+                        "message": response.text[:2000],
+                        "type": "fortiaigate_error",
+                        "code": response.status_code,
+                    }
+                }
+
             if stream:
                 return self._stream_response(response)
-            else:
-                result = response.json()
-                if "choices" in result and len(result["choices"]) > 0:
-                    return result["choices"][0]["message"]["content"]
-                return json.dumps(result)
- 
-        except requests.exceptions.SSLError as e:
-            return (
-                f"⚠️ SSL error: {str(e)[:200]}. "
-                "If using self-signed certs, set VERIFY_SSL=False in Valves."
-            )
-        except requests.exceptions.ConnectionError:
-            return (
-                "⚠️ Connection error: Cannot reach FortiAIGate. "
-                "Check the URL in Valves settings and ensure the core service is running."
-            )
+
+            #
+            # Important: return the complete OpenAI-compatible response.
+            # Do not return only message.content because that drops tool_calls.
+            #
+            return response.json()
+
+        except requests.exceptions.SSLError as exc:
+            return {
+                "error": {
+                    "message": f"FortiAIGate TLS error: {exc}",
+                    "type": "ssl_error",
+                }
+            }
+
+        except requests.exceptions.ConnectionError as exc:
+            return {
+                "error": {
+                    "message": f"Cannot reach FortiAIGate: {exc}",
+                    "type": "connection_error",
+                }
+            }
+
         except requests.exceptions.Timeout:
-            return f"⚠️ Timeout: FortiAIGate did not respond within {self.valves.TIMEOUT} seconds."
-        except Exception as e:
-            return f"Error: {str(e)}"
- 
-    def _stream_response(self, response) -> Generator:
-        for line in response.iter_lines():
-            if line:
-                decoded = line.decode("utf-8")
-                if decoded.startswith("data: "):
-                    data = decoded[6:]
-                    if data.strip() == "[DONE]":
-                        return
-                    try:
-                        chunk = json.loads(data)
-                        if "choices" in chunk and len(chunk["choices"]) > 0:
-                            delta = chunk["choices"][0].get("delta", {})
-                            content = delta.get("content", "")
-                            if content:
-                                yield content
-                    except json.JSONDecodeError:
-                        continue
+            return {
+                "error": {
+                    "message": (
+                        "FortiAIGate did not respond within "
+                        f"{self.valves.TIMEOUT} seconds."
+                    ),
+                    "type": "timeout_error",
+                }
+            }
+
+        except ValueError as exc:
+            return {
+                "error": {
+                    "message": f"Invalid JSON response from FortiAIGate: {exc}",
+                    "type": "response_error",
+                }
+            }
+
+        except Exception as exc:
+            return {
+                "error": {
+                    "message": str(exc),
+                    "type": "pipe_error",
+                }
+            }
+
+    def _stream_response(
+        self,
+        response: requests.Response,
+    ) -> Generator[str, None, None]:
+
+        for line in response.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+
+            if not line.startswith("data:"):
+                continue
+
+            data = line[5:].strip()
+
+            if data == "[DONE]":
+                break
+
+            #
+            # Forward the complete SSE chunk unchanged.
+            # This preserves delta.tool_calls as well as delta.content.
+            #
+            yield f"data: {data}\n\n"
+
+        yield "data: [DONE]\n\n"
