@@ -25,7 +25,7 @@ class Pipe:
         )
 
         API_KEY: str = Field(
-            default="",
+            default="<API_KEY>",
             description="FortiAIGate API token",
         )
 
