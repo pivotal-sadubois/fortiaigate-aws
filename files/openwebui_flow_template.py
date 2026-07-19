@@ -1,9 +1,10 @@
 """
 title: FortiAIGate
 author: Adrian / Sacha
-version: 0.3.0
+version: 0.4.0
 license: MIT
 description: Secure OpenAI-compatible Pipe for FortiAIGate with native tool-calling support
+changes: Allow MCP Object
 """
 
 import json
