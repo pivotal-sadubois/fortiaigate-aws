@@ -1,26 +1,32 @@
 #!/bin/bash
 #===============================================================================
 # SCRIPT NAME:    uploadECR.sh
-# DESCRIPTION:    Automated ECR Upload Script (macOS-compatible)
+# DESCRIPTION:    Automated ECR Upload Script (macOS-compatible) with Universal Dual Tagging
 # AUTHOR:         Adrian Sameli / Sacha Dubois, Fortinet
 # CREATED:        2026-03-11
-# VERSION:        0.1
+# VERSION:        0.3
 #===============================================================================
 # CHANGE LOG:
 # 2026-03-11 sdubois Initial version
+# 2026-10-17 sdubois Added universal dual-tagging support for all components
 #===============================================================================
 [ -f ./functions ] && . ./functions
 [ -z "$ECR_STAGEDIR" ] && ECR_STAGEDIR=/tmp/faig_$ECR_FORTIAIGATE_TAG
 
 echo ""
-echo "uploadECR.sh.sh - Upload FortiAIgate Images to ECR"
+echo "uploadECR.sh - Upload FortiAIgate Images to ECR"
 echo "by Adrian Sameli / Sacha Dubois, Fortinet"
 messageLine
 
 get_ecr_repo() {
   case "$1" in
     api) echo "fortiaigate/api" ;;
+    faig-models) echo "fortiaigate/faig-models" ;;
+    guardrail-scanner) echo "fortiaigate/guardrail-scanner" ;;
+    guardrail) echo "fortiaigate/guardrail" ;;
+    llm-gateway) echo "fortiaigate/llm-gateway" ;;
     core) echo "fortiaigate/core" ;;
+    vllm-server) echo "fortiaigate/vllm-server" ;;
     custom-triton) echo "fortiaigate/custom-triton" ;;
     license_manager) echo "fortiaigate/license_manager" ;;
     logd) echo "fortiaigate/logd" ;;
@@ -31,13 +37,33 @@ get_ecr_repo() {
   esac
 }
 
+# Map every component name to its original native release tag
+get_component_native_tag() {
+  case "$1" in
+    api) echo "v8.0.2-build0055" ;; # Adjust if your release tar version differs, or map accordingly
+    faig-models) echo "0.0.5-s1" ;;
+    guardrail-scanner) echo "v8.0.2-build0055" ;;
+    guardrail) echo "v8.0.2-build0055" ;;
+    llm-gateway) echo "v8.0.2-build0055" ;;
+    core) echo "v8.0.2-build0055" ;;
+    vllm-server) echo "0.28.0-rpt-s1" ;;
+    custom-triton) echo "25.11-onnx-trt-agt-rpt-s1" ;;
+    license_manager) echo "v8.0.2-build0055" ;;
+    logd) echo "v8.0.2-build0055" ;;
+    scanner) echo "v8.0.2-build0055" ;;
+    triton-models) echo "v8.0.2-build0055" ;;
+    webui) echo "v8.0.2-build0055" ;;
+    *) echo "" ;;
+  esac
+}
+
 checkLocalConfig 
 verifyOrLoginSSO
 verifyCLIutils registry
 verifyAWScredentials
 
 # ----------------------------------------------------------------------------------------
-# Cleaning up ECR Repository - deleting all images that are not tagged ECR_FORTIAIGATE_TAG
+# Cleaning up ECR Repository - deleting old tags except build0055
 # ----------------------------------------------------------------------------------------
 tags=$(getImageTags | sort | uniq -c | awk '{ print $2 }')
 if [ "$tags" != "" ]; then 
@@ -76,10 +102,10 @@ fi
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════"
-echo " FortiAIGate ECR Upload"
+echo " FortiAIGate ECR Upload (Universal Dual-Tagging)"
 echo "═══════════════════════════════════════════════════════════════"
 echo " TAR directory : $ECR_FORTIAIGATE_SOURCE_DIR"
-echo " New tag       : $ECR_FORTIAIGATE_TAG"
+echo " Primary tag   : $ECR_FORTIAIGATE_TAG"
 echo " ECR registry  : $ECR_FORTIAIGATE_REPOSITORY"
 echo " AWS region    : $ECR_REGION"
 echo " TAR files     : ${#ECR_FORTIAIGATE_TAR_FILES[@]} found"
@@ -138,14 +164,32 @@ for TAR_PATH in "${ECR_FORTIAIGATE_TAR_FILES[@]}"; do
   }
 
   ECR_IMAGE_TAG="${ECR_FORTIAIGATE_REPOSITORY}/${ECR_REPO}:${ECR_FORTIAIGATE_TAG}"
-  info "Uploading TAR directly to ECR → $ECR_IMAGE_TAG"
+  info "Uploading TAR to ECR (Primary Tag) → $ECR_IMAGE_TAG"
 
   if skopeo copy \
       "docker-archive:${TAR_PATH}" \
       "docker://${ECR_IMAGE_TAG}" \
       >/tmp/error.log 2>&1
   then
-    ok "Pushed: $ECR_IMAGE_TAG"
+    ok "Pushed primary tag: $ECR_IMAGE_TAG"
+
+    # Push the native release tag alias for every component
+    NATIVE_TAG="$(get_component_native_tag "$COMPONENT")"
+    if [[ -n "$NATIVE_TAG" ]]; then
+      NATIVE_IMAGE_TAG="${ECR_FORTIAIGATE_REPOSITORY}/${ECR_REPO}:${NATIVE_TAG}"
+      info "Applying native release tag alias → $NATIVE_IMAGE_TAG"
+      
+      if skopeo copy \
+          "docker://${ECR_IMAGE_TAG}" \
+          "docker://${NATIVE_IMAGE_TAG}" \
+          >>/tmp/error.log 2>&1
+      then
+        ok "Pushed native tag: $NATIVE_IMAGE_TAG"
+      else
+        warn "Failed to push native tag $NATIVE_IMAGE_TAG"
+      fi
+    fi
+
     SUCCESS=$((SUCCESS + 1))
   else
     fail "Push failed for $ECR_IMAGE_TAG"
@@ -171,7 +215,7 @@ if [[ $FAILED -gt 0 ]]; then
 fi
 
 echo ""
-ok "All images uploaded to ECR with tag: $ECR_FORTIAIGATE_TAG"
+ok "All images uploaded to ECR with dual tags (build0055 + original native tags)"
 
 echo " ▪  Write ECR configuration to state file (\$HOME/.faig/ecr-upload.stat)"
 echo "export ECR_FORTIAIGATE_REPOSITORY=$ECR_FORTIAIGATE_REPOSITORY"       >  $HOME/.faig/ecr-upload.stat
@@ -179,6 +223,5 @@ echo "export ECR_FORTIAIGATE_TAG=$ECR_FORTIAIGATE_TAG"                     >> $H
 echo "export ECR_FORTIAIGATE_SOURCE_DIR=$ECR_FORTIAIGATE_SOURCE_DIR"       >> $HOME/.faig/ecr-upload.stat
 echo "export ECR_REGION=$ECR_REGION"                                       >> $HOME/.faig/ecr-upload.stat
 
-
-
 exit
+

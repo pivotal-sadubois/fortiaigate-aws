@@ -1,3 +1,5 @@
+# Estimated cost $3.55/hour
+
 apiVersion: eksctl.io/v1alpha5
 kind: ClusterConfig
 
@@ -6,20 +8,32 @@ metadata:
   region: REGION
   version: "1.35"
 
+availabilityZones:
+  - AZ
+  - SECOND_AZ
+
 managedNodeGroups:
   - name: faig-ng
-    instanceType: m6i.2xlarge
-    desiredCapacity: 2
+    instanceType: r5.4xlarge
+    desiredCapacity: 1
     minSize: 1
     maxSize: 3
     volumeSize: 80
     privateNetworking: true
 
-  - name: gpu-spot-ng
-    instanceType: g5.4xlarge
+  # --------------------------------------------------
+  # GPU Node Group - EC2 Capacity Reservation
+  # --------------------------------------------------
+  - name: gpu-ondemand-ng
+    instanceType: INSTANCE
+    availabilityZones:
+      - AZ
     desiredCapacity: 1
     spot: false
     minSize: 0
     maxSize: 2
     volumeSize: 200
     privateNetworking: true
+    capacityReservation:
+      capacityReservationTarget:
+        capacityReservationID: RESERVATION_ID

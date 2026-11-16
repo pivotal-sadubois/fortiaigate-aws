@@ -29,9 +29,13 @@ storage:
 ingress:
   enabled: true
   className: alb
+  host: "admin.XXXDOMAINXXX"
   annotations:
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/certificate-arn: "XXX_ARN_XXX"
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
     # API and WebUI both run TLS — ALB must use HTTPS for backend connections
     alb.ingress.kubernetes.io/backend-protocol: HTTPS
     alb.ingress.kubernetes.io/healthcheck-protocol: HTTPS

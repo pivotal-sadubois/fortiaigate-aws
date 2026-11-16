@@ -18,6 +18,13 @@ else
   exit
 fi
 
+if [ ! -f "$HOME/.faig/deploy.stat" ]; then
+  echo "ERROR: Deployment state file not found"
+  exit 1
+fi
+
+source "$HOME/.faig/deploy.stat"
+
 echo ""
 echo "deleteFortiAIgate.sh - Delete FortiAIgate"
 echo "by Adrian Sameli / Sacha Dubois, Fortinet"
@@ -30,14 +37,17 @@ verifyCLIutils
 verifyAWScredentials
 verifyAWSRoute53credentials
 
-messageTitle "Uninstall Open WebUI and FortiAIgate"
-echo " ▪  Delete Open WebUI Helm Chart (open-webui)"
-deleteHelmChart open-webui open-webui
-deleteNamespace open-webui
+kubectl get ns > /dev/null 2>&1; ret=$?
+if [ $ret -eq 0 ]; then
+  messageTitle "Uninstall Open WebUI and FortiAIgate"
+  echo " ▪  Delete Open WebUI Helm Chart (open-webui)"
+  deleteHelmChart open-webui open-webui
+  deleteNamespace open-webui
 
-echo " ▪  Delete Open FortiAiGate Helm Chart (fortiaigate)"
-deleteHelmChart fortiaigate fortiaigate
-deleteNamespace fortiaigate
+  echo " ▪  Delete Open FortiAiGate Helm Chart (fortiaigate)"
+  deleteHelmChart fortiaigate fortiaigate
+  deleteNamespace fortiaigate
+fi
 
 messageTitle "Cleaning-up AWS EKS Kubernetes Cluster Deployment ($EKS_CLUSTER_NAME)"
 
@@ -45,13 +55,15 @@ messageTitle "Cleaning-up AWS EKS Kubernetes Cluster Deployment ($EKS_CLUSTER_NA
 # Step 1 - Delete application-facing resources first
 # ------------------------------------------------------------------------------------------
 deleteELBv2LoadBalancer
-#deleteEKSnodeGroup
+
+deleteEKSnodeGroup
 deleteEFSstorage
 
 # ------------------------------------------------------------------------------------------
 # Step 2 - Delete EKS cluster
 # ------------------------------------------------------------------------------------------
 deleteEKScluster
+deleteNodeReservation $EKS_REGION
 
 # ------------------------------------------------------------------------------------------
 # Step 3 - Wait for cluster CloudFormation stack and repair if needed

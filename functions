@@ -26,6 +26,9 @@ checkLocalConfig() {
   [ ! -d $HOME/.faig ] && mkdir -p $HOME/.faig
   [ -f $HOME/.faig/config ] && . $HOME/.faig/config
 
+  # Get AWS Region from Cluster Config
+  #export AWS_REGION=$(egrep "region:" files/$EKS_CONFIG | awk '{ print $NF }')
+
   # Set Default Variables
   [ -z "$ECR_STAGEDIR" ] && ECR_STAGEDIR=/tmp/faig_$ECR_FORTIAIGATE_TAG
 #  [ -z "$FAIG_LICENSE_DIR" ] && FAIG_LICENSE_DIR=$HOME/.faig/licenses
@@ -354,47 +357,324 @@ verifySpotPlacementScrores() {
   fi
 }
 
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: checkNodeAvailability
+# Function Purpose ...: Check Node Availability in a AWS Region
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: EKS_REGION
+# Argument ($2) ......: EKS_INSTANCE
+# ------------------------------------------------------------------------------------------
+# Return Value .......: 
+# ------------------------------------------------------------------------------------------
+checkNodeAvailability() {
+  eks_region=$1
+  eks_instance=$2
+
+  aws ec2 describe-instance-type-offerings \
+    --profile "$AWS_PROFILE" \
+    --region "$eks_region" \
+    --location-type availability-zone \
+    --filters "Name=instance-type,Values=$eks_instance" \
+    --query 'InstanceTypeOfferings[].Location' \
+    --output text
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: multiRegionodeReservation
+# Function Purpose ...: Search Multi Regions for a Node Reservation
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: EKS_REGION
+# Argument ($2) ......: EKS_AZ
+# Argument ($3) ......: EKS_INSTANCE_TYPE
+# Return Value .......: Reservation ID on success, empty on failure
+# ------------------------------------------------------------------------------------------
+multiRegionodeReservation() {
+  #local EKS_REGION_LIST="eu-south-2 eu-central-1 eu-north-1 us-east-1 us-east-2 us-west-2"
+  local EKS_REGION_LIST="eu-north-1 eu-south-2 eu-central-1 us-east-1 us-east-2 us-west-2"
+  local EKS_INSTANCE_LIST="g6e.2xlarge g6e.4xlarge"
+
+  reservation_id=""
+  for region in $EKS_REGION_LIST; do
+    messageTitle "Search for Available GPU Nodes in region: $region"
+   
+    # Verify if the region is enabled in your AWS account
+    stt=$(aws account get-region-opt-status \
+      --region-name $region \
+      --region us-east-1 \
+      --profile "$AWS_PROFILE" \
+      --query 'RegionOptStatus' \
+      --output text)
+  
+    if [ "$stt" != "ENABLED" ] && [ "$stt" != "ENABLED_BY_DEFAULT" ]; then
+      echo "   -----------------------------------------------------------------------------------------"
+      echo "   ERROR: The AWS Region $region is not enabled in your account and will be skipped"
+      echo "          pleaes run the following command to enable it:"
+      echo "          => aws account enable-region --region-name $region"
+      echo "                 --region us-east-1  --profile \"$AWS_PROFILE\""
+      echo "   -----------------------------------------------------------------------------------------"
+      continue
+    fi
+  
+    # Verify if there is already a reservation
+    # ie. cr-0b0a8b531c783f6b4    g6e.4xlarge     eu-central-1a   1       1       active
+    str=$(aws ec2 describe-capacity-reservations \
+      --region "$region" \
+      --profile "$AWS_PROFILE" \
+      --filters "Name=state,Values=active" \
+                "Name=instance-type,Values=g6e.2xlarge,g6e.4xlarge" \
+      --query 'CapacityReservations[?AvailableInstanceCount>`0`].[CapacityReservationId,InstanceType,AvailabilityZone,TotalInstanceCount,AvailableInstanceCount,State]' \
+      --output text 2>/tmp/error.log); result=$?
+
+    if [ $result -ne 0 ]; then
+      cat /tmp/error.log
+      return 1
+    fi
+
+    if [ "$str" != "" ]; then 
+      EKS_REGION="$region"
+      reservation_id=$(echo "$str" | awk 'NR==1 { print $1 }')
+      INSTANCE_TYPE=$(echo "$str" | awk 'NR==1 { print $2 }')
+      EKS_AZ=$(echo "$str" | awk 'NR==1 { print $3 }')
+  
+      echo " ▪ Existing Node Reservation found in AZ: $EKS_AZ for Instance: $INSTANCE_TYPE => Successful ($reservation_id)"
+      showNodeReservation "$EKS_REGION"
+      break
+    else
+      for instance in $EKS_INSTANCE_LIST; do
+        AVAILABILITY_ZONES=$(checkNodeAvailability "$region" "$instance")
+  
+        for az in $AVAILABILITY_ZONES; do
+          reservation_id=$(createNodeReservation "$region" "$az" "$instance")
+  
+          if [ -n "$reservation_id" ]; then
+            echo " ▪ Create Node Reservation in AZ: $az for Instance: $instance => Successful ($reservation_id)"
+  
+            EKS_REGION="$region"
+            EKS_AZ="$az"
+            INSTANCE_TYPE="$instance"
+    
+            showNodeReservation "$EKS_REGION"
+  
+            break 3
+          else
+            echo " ▪ Create Node Reservation in AZ: $az for Instance: $instance => Failed"
+          fi
+        done
+      done
+    fi
+  done
+
+  if [ -z "$reservation_id" ]; then
+    echo "Failed to get a GPU Node Reservation"
+    return 1
+  fi
+
+  # Find a second availability zone for EKS networking
+  SECOND_AZ=$(aws ec2 describe-availability-zones \
+    --region "$EKS_REGION" \
+    --profile "$AWS_PROFILE" \
+    --filters "Name=state,Values=available" \
+    --query "AvailabilityZones[?ZoneName!='${EKS_AZ}'].ZoneName | [0]" \
+    --output text 2>/tmp/error.log); result=$?
+
+  if [ $result -ne 0 ] || [ -z "$SECOND_AZ" ] || [ "$SECOND_AZ" = "None" ]; then
+    echo "Failed to find a second availability zone in $EKS_REGION"
+    cat /tmp/error.log
+    return 1
+  fi
+
+  echo " ▪ GPU Reservation AZ: $EKS_AZ"
+  echo " ▪ Second EKS AZ ....: $SECOND_AZ"
+
+  echo " ▪  Write EKS configuration to state file (\$HOME/.faig/deploy.stat)"
+  echo "export EKS_CLUSTER_NAME=$EKS_CLUSTER_NAME"       >  $HOME/.faig/deploy.stat
+  echo "export EKS_REGION=$EKS_REGION"                   >> $HOME/.faig/deploy.stat
+  echo "export EKS_INSTANCE_TYPE=$INSTANCE_TYPE"         >> $HOME/.faig/deploy.stat
+  echo "export RESERVATION_ID=$reservation_id"           >> $HOME/.faig/deploy.stat
+  echo "export AZ=$EKS_AZ"                               >> $HOME/.faig/deploy.stat
+  echo "export SECOND_AZ=$SECOND_AZ"                     >> $HOME/.faig/deploy.stat
+
+ echo " ▪ Create EKS Node Configuration (/tmp/eks-cluster.yaml)"
+  sed -e "s/INSTANCE/$INSTANCE_TYPE/g" \
+      -e "s/CLUSTER/$EKS_CLUSTER_NAME/g" \
+      -e "s/REGION/$EKS_REGION/g" \
+      -e "s/SECOND_AZ/$SECOND_AZ/g" \
+      -e "s/AZ/$EKS_AZ/g" \
+      -e "s/RESERVATION_ID/$reservation_id/g" \
+         files/eks-cluster-template.yaml > /tmp/eks-cluster.yaml
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: createNodeReservation
+# Function Purpose ...: Create a Node Reservation
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: EKS_REGION
+# Argument ($2) ......: EKS_AZ
+# Argument ($3) ......: EKS_INSTANCE_TYPE
+# Return Value .......: Reservation ID on success, empty on failure
+# ------------------------------------------------------------------------------------------
+createNodeReservation() {
+  local eks_region=$1
+  local eks_az=$2
+  local eks_instance=$3
+  local reservation_id
+
+  reservation_id=$(aws ec2 create-capacity-reservation \
+    --region "$eks_region" \
+    --profile "$AWS_PROFILE" \
+    --instance-type "$eks_instance" \
+    --instance-platform Linux/UNIX \
+    --availability-zone "$eks_az" \
+    --instance-count 1 \
+    --instance-match-criteria targeted \
+    --end-date-type unlimited \
+    --query 'CapacityReservation.CapacityReservationId' \
+    --output text 2>/tmp/error.log)
+
+  if [ $? -eq 0 ] && [ -n "$reservation_id" ] && [ "$reservation_id" != "None" ]; then
+    echo "$reservation_id"
+    return 0
+  else
+    #cat /tmp/error.log >&2
+    return 1
+  fi
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: deleteNodeReservation
+# Function Purpose ...: Delete all active Node Reservations in a Region
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: EKS_REGION
+# ------------------------------------------------------------------------------------------
+# Return Value .......: 0 = Success, 1 = Failure
+# ------------------------------------------------------------------------------------------
+deleteNodeReservation() {
+  local eks_region=$1
+  local reservation_ids
+  local reservation_id
+  local confirm
+
+  reservation_ids=$(aws ec2 describe-capacity-reservations \
+    --region "$eks_region" \
+    --filters Name=state,Values=active \
+    --query 'CapacityReservations[].CapacityReservationId' \
+    --output text) || return 1
+
+  if [ -z "$reservation_ids" ] || [ "$reservation_ids" = "None" ]; then
+    echo " ▪ No active Capacity Reservations found in $eks_region"
+    return 0
+  fi
+
+  for reservation_id in $reservation_ids; do
+    echo " ▪ Cancelling reservation: $reservation_id"
+
+    aws ec2 cancel-capacity-reservation \
+      --region "$eks_region" \
+      --capacity-reservation-id "$reservation_id" \
+      --output json > /dev/null 2>&1; ret=$?
+
+    if [ $ret -ne 0 ]; then 
+      echo "   => Failed to cancel ($reservation_id)" >&2
+    fi
+  done
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: showNodeReservation
+# Function Purpose ...: Delete a Node Reservation
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: EKS_REGION
+# Argument ($2) ......: EKS_AZ
+# Argument ($3) ......: EKS_INSTANCE_TYPE
+# ------------------------------------------------------------------------------------------
+# Return Value .......:
+# ------------------------------------------------------------------------------------------
+showNodeReservation() {
+  eks_region=$1
+
+  aws ec2 describe-capacity-reservations \
+    --region $eks_region\
+    --filters Name=state,Values=active \
+    --query 'CapacityReservations[*].[CapacityReservationId,InstanceType,AvailabilityZone,TotalInstanceCount,AvailableInstanceCount,State]' \
+    --output table | sed 's/^/   /g'
+}
+
+
 # ------------------------------------------------------------------------------------------
 # Function Name ......: installEKSCluster
 # Function Purpose ...: Install the EKS Cluster without NodeGroups
 # ------------------------------------------------------------------------------------------
 # Argument ($1) ......:
-# Dependancies: ......: AWS_REGION, EKS_CLUSTER_NAME
+# Dependancies: ......: EKS_REGION, EKS_CLUSTER_NAME
 # ------------------------------------------------------------------------------------------
 # Return Value .......:
 # ------------------------------------------------------------------------------------------
 installEKSCluster() {
-  messageTitle "AWS EKS Kubernetes Cluster Deployment"
+  messageTitle "AWS EKS Kubernetes Cluster Deployment in region $EKS_REGION"
 
-  cluster=$(aws eks list-clusters --region "$AWS_REGION" | jq --arg key "$EKS_CLUSTER_NAME" -r '.clusters[] | select(. == $key)')
+  EKS_CONFIG="/tmp/eks-cluster.yaml"
+
+  cluster=$(aws eks list-clusters --region "$EKS_REGION" | jq --arg key "$EKS_CLUSTER_NAME" -r '.clusters[] | select(. == $key)')
   if [ "$cluster" != "$EKS_CLUSTER_NAME" ]; then
-    sed -e "s/CLUSTER/$EKS_CLUSTER_NAME/g" \
-        -e "s/REGION/$AWS_REGION/g"  \
-        -e "s/REGION/$AWS_REGION/g"  \
-        -e "s/REGION/$AWS_REGION/g"  \
-        files/eks-cluster-template.yaml > /tmp/eks-cluster.yaml
-
-    eksctl create cluster -f /tmp/eks-cluster.yaml --profile "$AWS_PROFILE" > /tmp/error.log 2>&1; ret=$?
+    eksctl create cluster -f $EKS_CONFIG --profile "$AWS_PROFILE" --without-nodegroup --timeout 25m > /tmp/error.log 2>&1; ret=$?
     if [ $ret -ne 0 ]; then
       logMessages /tmp/error.log
       echo "ERROR: Cluster creatation failed"
       exit
     fi
 
-    echo " ▪ Update Kubeconfig for the EKS Cluster"
-    aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region "$AWS_REGION" > /dev/null 2>&1
+    echo " ▪ Create Create CPU Node Group"
+    eksctl create nodegroup -f "$EKS_CONFIG" --include=faig-ng --profile "$AWS_PROFILE" --timeout 60m > /tmp/error.log 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Creating CPU Node Group (faig-ng) failed"
+      exit
+    fi
+    
+    # Waiting for CPU node group to become ACTIVE...
+    aws eks wait nodegroup-active --cluster-name "$EKS_CLUSTER_NAME" --nodegroup-name faig-ng --region "$EKS_REGION" \
+        --profile "$AWS_PROFILE" || exit 1
+    
+    echo " ▪ Create GPU Node Group (gpu-ondemand-ng)"
+    eksctl create nodegroup -f "$EKS_CONFIG" --include=gpu-ondemand-ng --profile "$AWS_PROFILE" --timeout 60m > /tmp/error.log 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Creating GPU Node Group (gpu-ondemand-ng) failed"
+      exit
+    fi
 
-    echo " ▪  Write EKS configuration to state file (\$HOME/.faig/depliy.stat)"
-    echo "export EKS_CLUSTER_NAME=$EKS_CLUSTER_NAME"       >  $HOME/.faig/deploy.stat
-    echo "export AWS_REGION=$AWS_REGION"                   >> $HOME/.faig/deploy.stat
+    # Waiting for GPU node group to become ACTIVE...
+    aws eks wait nodegroup-active --cluster-name "$EKS_CLUSTER_NAME" --nodegroup-name gpu-ondemand-ng --region "$EKS_REGION" \
+        --profile "$AWS_PROFILE" || exit 1
+
+    echo " ▪ EKS Cluster '$EKS_CLUSTER_NAME' successfully deployed"
+
+    echo " ▪ Update Kubeconfig for the EKS Cluster"
+    aws eks update-kubeconfig --name $EKS_CLUSTER_NAME --region "$EKS_REGION" > /dev/null 2>&1
+
+    echo " ▪ Kubernetes Nodes Status"
+    echo "   ------------------------------------------------------------------------------------------------------------------------------------------------------"
+    kubectl get nodes   -L eks.amazonaws.com/nodegroup   -L eks.amazonaws.com/capacityType   -L node.kubernetes.io/instance-type | sed 's/^/   /g'
+    echo "   ------------------------------------------------------------------------------------------------------------------------------------------------------"
   else
-    stt=$(aws eks describe-cluster --name $EKS_CLUSTER_NAME --region $AWS_REGION --query "cluster.status" --output text --no-cli-pager)
+    stt=$(aws eks describe-cluster --name $EKS_CLUSTER_NAME --region $EKS_REGION --query "cluster.status" --output text --no-cli-pager)
     if [ "$stt" == "ACTIVE" ]; then
+      aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$EKS_REGION" >/tmp/error.log 2>&1 || return 1
       echo " ▪ EKS Cluster '$EKS_CLUSTER_NAME' already installed with status ($stt)"
+      echo " ▪ Kubernetes Nodes Status"
+      echo "   ------------------------------------------------------------------------------------------------------------------------------------------------------"
+      kubectl get nodes   -L eks.amazonaws.com/nodegroup   -L eks.amazonaws.com/capacityType   -L node.kubernetes.io/instance-type | sed 's/^/   /g'
+      echo "   ------------------------------------------------------------------------------------------------------------------------------------------------------"
     else
       echo "ERROR: Cluster is currently in ($stt) state. Please fix or remove the cluster to proceede"
       exit
     fi
+
   fi
 
 }
@@ -461,12 +741,12 @@ installALBloadBalancer() {
 
   SA_NAMESPACE="kube-system"
   POLICY_NAME="AWSLoadBalancerControllerIAMPolicy"
-  ROLE_NAME="AmazonEKSLoadBalancerControllerRole"
+  ROLE_NAME="AmazonEKSLoadBalancerControllerRole-${EKS_REGION}"
 
   messageTitle "ALB Load Balancer for EKS Kubernetes Cluster"
 
   # Get AWS Account ID from current login/session
-  AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text 2>/tmp/error.log); ret=$?
+  AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --profile "$AWS_PROFILE" --output text 2>/tmp/error.log); ret=$?
   if [ $ret -ne 0 -o -z "$AWS_ACCOUNT_ID" ]; then
     logMessages /tmp/error.log
     echo "ERROR: Failed to get AWS Account ID from current login"
@@ -482,18 +762,19 @@ installALBloadBalancer() {
     # Ensure the IAM OIDC provider exists
     eksctl utils associate-iam-oidc-provider \
       --cluster "$EKS_CLUSTER_NAME" \
-      --region "$AWS_REGION" \
+      --profile "$AWS_PROFILE" \
+      --region "$EKS_REGION" \
       --approve > /tmp/error.log 2>&1; ret=$?
 
     if [ $ret -ne 0 ]; then
       logMessages /tmp/error.log
       echo "ERROR: ALB Load Balancer creation failed"
-      echo "       => eksctl utils associate-iam-oidc-provider --cluster $EKS_CLUSTER_NAME --region $AWS_REGION --approve"
+      echo "       => eksctl utils associate-iam-oidc-provider --cluster $EKS_CLUSTER_NAME --region $EKS_REGION --approve"
       exit 1
     fi
 
     # Ensure the IAM policy exists
-    aws iam get-policy \
+    aws iam get-policy --profile "$AWS_PROFILE" \
       --policy-arn "arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME" >/dev/null 2>&1; ret=$?
 
     if [ $ret -ne 0 ]; then
@@ -512,6 +793,7 @@ installALBloadBalancer() {
 
       aws iam create-policy \
         --policy-name "$POLICY_NAME" \
+        --profile "$AWS_PROFILE" \
         --policy-document file:///tmp/iam_policy.json > /tmp/error.log 2>&1; ret=$?
 
       if [ $ret -ne 0 ]; then
@@ -528,9 +810,10 @@ installALBloadBalancer() {
     echo " ▪ create IAM service account aws-load-balancer-controller"
     eksctl create iamserviceaccount \
       --cluster "$EKS_CLUSTER_NAME" \
-      --region "$AWS_REGION" \
+      --region "$EKS_REGION" \
       --namespace "$SA_NAMESPACE" \
       --name aws-load-balancer-controller \
+      --profile "$AWS_PROFILE" \
       --role-name "$ROLE_NAME" \
       --attach-policy-arn "arn:aws:iam::$AWS_ACCOUNT_ID:policy/$POLICY_NAME" \
       --override-existing-serviceaccounts \
@@ -541,7 +824,7 @@ installALBloadBalancer() {
       echo "ERROR: Creating Service Account failed"
       echo "       => eksctl create iamserviceaccount \\"
       echo "            --cluster $EKS_CLUSTER_NAME \\"
-      echo "            --region $AWS_REGION \\"
+      echo "            --region $EKS_REGION \\"
       echo "            --namespace $SA_NAMESPACE \\"
       echo "            --name aws-load-balancer-controller \\"
       echo "            --role-name $ROLE_NAME \\"
@@ -564,14 +847,15 @@ installALBloadBalancer() {
 
     VPC_ID=$(aws eks describe-cluster \
       --name "$EKS_CLUSTER_NAME" \
-      --region "$AWS_REGION" \
+      --profile "$AWS_PROFILE" \
+      --region "$EKS_REGION" \
       --query 'cluster.resourcesVpcConfig.vpcId' \
       --output text 2>/tmp/error.log); ret=$?
 
     if [ $ret -ne 0 -o -z "$VPC_ID" ]; then
       logMessages /tmp/error.log
       echo "ERROR: Failed to get VPC ID for cluster $EKS_CLUSTER_NAME"
-      echo "       => aws eks describe-cluster --name $EKS_CLUSTER_NAME --region $AWS_REGION --query 'cluster.resourcesVpcConfig.vpcId' --output text"
+      echo "       => aws eks describe-cluster --name $EKS_CLUSTER_NAME --region $EKS_REGION --query 'cluster.resourcesVpcConfig.vpcId' --output text"
       exit 1
     fi
 
@@ -581,7 +865,7 @@ installALBloadBalancer() {
       --set clusterName="$EKS_CLUSTER_NAME" \
       --set serviceAccount.create=false \
       --set serviceAccount.name=aws-load-balancer-controller \
-      --set region="$AWS_REGION" \
+      --set region="$EKS_REGION" \
       --set vpcId="$VPC_ID" > /tmp/error.log 2>&1; ret=$?
 
     if [ $ret -ne 0 ]; then
@@ -611,156 +895,76 @@ installALBloadBalancer() {
 # Function Purpose ...: Update Route53 DNS record for the ALB Ingress hostname
 # ------------------------------------------------------------------------------------------
 # Argument ($1) ......: <namespace>
-# Argument ($2) ......: <fqdn>
-# Argument ($3) ......: <hosted-zone-id>
+# Argument ($2) ......: <app-name>
+# Argument ($3) ......: <fqdn>
+# Argument ($4) ......: <hosted-zone-id>
 # Dependancies: ......: kubectl
 # ------------------------------------------------------------------------------------------
 # Return Value .......: none (exit on error)
 # ------------------------------------------------------------------------------------------
 updateAppDNS() {
-  # Skip this function if ROUTE53_DNS_UPDATES is disabled
-  [ "${ROUTE53_DNS_UPDATES:-true}" == "false" ] && return
+  [ "${ROUTE53_DNS_UPDATES:-true}" == "false" ] && return 0
 
-  APP_NAMESPACE="$1"
-  APP_NAME="$2"
-  APP_FQDN="$3"
-  HOSTED_ZONE_ID="$4"
-  APP_INGRESS="${APP_NAME}-ingress"
+  local APP_NAMESPACE="$1" APP_NAME="$2" APP_FQDN="$3" HOSTED_ZONE_ID="$4"
+  local APP_INGRESS="${2}-ingress"
+  local ALB_HOSTNAME="" OLD_DNS_TARGET="" CHANGE_ID="" records change_batch
+  local ret n STATUS FINAL_DNS_TARGET RESOLVED_8 RESOLVED_1 MATCH_8 MATCH_1
 
-  messageTitle "Verify Route53 DNS Record for $APP_NAME Application"
-
-  if [ -z "$APP_NAMESPACE" -o -z "$APP_FQDN" -o -z "$HOSTED_ZONE_ID" ]; then
-    echo "ERROR: Missing arguments"
-    echo "       => updateAppDNS <namespace> <fqdn> <hosted-zone-id>"
-    exit 1
+  if [ -z "$APP_NAMESPACE" ] || [ -z "$APP_NAME" ] || [ -z "$APP_FQDN" ] || [ -z "$HOSTED_ZONE_ID" ]; then
+    echo "ERROR: updateAppDNS requires namespace, app name, FQDN and hosted zone ID"
+    return 1
   fi
 
-  # --------------------------------------------------------------------------
-  # Get ALB hostname from ingress
-  # --------------------------------------------------------------------------
-  ALB_HOSTNAME=""
-echo "DEBUG: kubectl -n $APP_NAMESPACE get ingress $APP_INGRESS -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'"
-  while [ -z "$ALB_HOSTNAME" ]; do 
-    ALB_HOSTNAME=$(kubectl -n "$APP_NAMESPACE" get ingress "$APP_INGRESS" \
-      -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/tmp/error.log); ret=$?
-    [ "$ALB_HOSTNAME" != "" ] && break
+  # Wait for provisioning, but do not hide API failures or wait forever.
+  for ((n=0; n<60; n++)); do
 
+    ALB_HOSTNAME=$(kubectl -n "$APP_NAMESPACE" get ingress "$APP_INGRESS" \
+      -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/tmp/error.log) || {
+      logMessages /tmp/error.log
+      return 1
+    }
+    [ -n "$ALB_HOSTNAME" ] && break
     sleep 15
   done
-
-  if [ $ret -ne 0 -o -z "$ALB_HOSTNAME" ]; then
-    logMessages /tmp/error.log
-    echo "ERROR: updateAppDNS - Failed to get ALB hostname from ingress"
-    echo "       => kubectl -n $APP_NAMESPACE get ingress $APP_INGRESS"
-    exit 1
+  if [ -z "$ALB_HOSTNAME" ]; then
+    echo "ERROR: Timed out waiting for $APP_NAMESPACE/$APP_INGRESS load balancer"
+    return 1
   fi
 
-  echo " ▪ APP_FQDN ............: $APP_FQDN"
-  echo " ▪ APP_INGRESS .........: $APP_INGRESS"
-  echo " ▪ ALB_HOSTNAME ........: $ALB_HOSTNAME"
+  # Compare authoritative state, not cached public DNS resolution.
+  records=$(aws route53 list-resource-record-sets \
+    --hosted-zone-id "$HOSTED_ZONE_ID" --profile "$AWS_PROFILE" \
+    --output json --no-cli-pager 2>/tmp/error.log) || {
+    logMessages /tmp/error.log
+    return 1
+  }
+  OLD_DNS_TARGET=$(printf '%s' "$records" | jq -er --arg name "${APP_FQDN%.}." '
+    [.ResourceRecordSets[] | select(.Name == $name and .Type == "CNAME")
+      | .ResourceRecords[0].Value][0] // ""') || return 1
+  if [ "${OLD_DNS_TARGET%.}" = "${ALB_HOSTNAME%.}" ]; then
+    echo " ▪ DNS already configured: $APP_FQDN -> $ALB_HOSTNAME"
+    return 0
+  fi
 
-  DNS_TARGET=$(aws route53 list-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID --profile "$AWS_PROFILE" --no-cli-pager | \
-             jq -r --arg key "${APP_FQDN}." '.ResourceRecordSets[] | select(.Name == $key).Name')
-
-echo "XXX DNS_TARGET: $DNS_TARGET"
-
-  # --------------------------------------------------------------------------
-  # No DNS Record set yet
-  # --------------------------------------------------------------------------
-  if [ "$DNS_TARGET" == "" ]; then 
-    # --------------------------------------------------------------------------
-    # Create / Update DNS Record
-    # --------------------------------------------------------------------------
-    CHANGE_ID=$(aws route53 change-resource-record-sets \
-      --hosted-zone-id "$HOSTED_ZONE_ID" \
-      --change-batch "{
-        \"Changes\": [{
-          \"Action\": \"UPSERT\",
-          \"ResourceRecordSet\": {
-            \"Name\": \"$APP_FQDN\",
-            \"Type\": \"CNAME\",
-            \"TTL\": 300,
-            \"ResourceRecords\": [{
-              \"Value\": \"$ALB_HOSTNAME\"
-            }]
-          }
-        }]
-      }" \
-      --query 'ChangeInfo.Id' \
-      --output text 2>/tmp/error.log); ret=$?
-
-    if [ $ret -ne 0 -o -z "$CHANGE_ID" -o "$CHANGE_ID" = "None" ]; then
-      logMessages /tmp/error.log
-      echo "ERROR: Creating Route53 CNAME failed"
-      echo "       => aws route53 change-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID ..."
-      exit 1
-    fi
-#gaga
-
-  else
-    # --------------------------------------------------------------------------
-    # Read current Route53 target before change
-    # --------------------------------------------------------------------------
-    OLD_DNS_TARGET=$(aws route53 list-resource-record-sets \
-      --hosted-zone-id "$HOSTED_ZONE_ID" \
-      --query "ResourceRecordSets[?Name == '${APP_FQDN}.'].ResourceRecords[0].Value" \
-      --output text 2>/tmp/error.log); ret=$?
-
-  echo "APP_FQDN:$APP_FQDN"
-
-  echo "aws route53 list-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID --query \"ResourceRecordSets[?Name == '${APP_FQDN}.'].ResourceRecords[0].Value\""
-  echo "OLD_DNS_TARGET:$OLD_DNS_TARGET RET:$ret"
-
-    if [ $ret -ne 0 ]; then
-      logMessages /tmp/error.log
-      echo "ERROR: Failed to read current Route53 DNS record"
-      echo "       => aws route53 list-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID"
-      exit 1
-    fi
-
-  echo "OLD_DNS_TARGET:$OLD_DNS_TARGET"
-  echo "NEW_DNS_TARGET:$NEW_DNS_TARGET"
-
-    # No Change needed
-    if [ "$OLD_DNS_TARGET" == "$NEW_DNS_TARGET" ]; then 
-      return
-    fi
-
-    [ "$OLD_DNS_TARGET" = "None" ] && OLD_DNS_TARGET=""
-    echo " ▪ OLD_DNS_TARGET ......: $OLD_DNS_TARGET"
-    echo " ▪ NEW_DNS_TARGET ......: $ALB_HOSTNAME"
-
-    # --------------------------------------------------------------------------
-    # Create / Update DNS Record
-    # --------------------------------------------------------------------------
-    CHANGE_ID=$(aws route53 change-resource-record-sets \
-      --hosted-zone-id "$HOSTED_ZONE_ID" \
-      --change-batch "{
-        \"Changes\": [{
-          \"Action\": \"UPSERT\",
-          \"ResourceRecordSet\": {
-            \"Name\": \"$APP_FQDN\",
-            \"Type\": \"CNAME\",
-            \"TTL\": 300,
-            \"ResourceRecords\": [{
-              \"Value\": \"$ALB_HOSTNAME\"
-            }]
-          }
-        }]
-      }" \
-      --query 'ChangeInfo.Id' \
-      --output text 2>/tmp/error.log); ret=$?
-
-    if [ $ret -ne 0 -o -z "$CHANGE_ID" -o "$CHANGE_ID" = "None" ]; then
-      logMessages /tmp/error.log
-      echo "ERROR: Creating Route53 CNAME failed"
-      echo "       => aws route53 change-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID ..."
-      exit 1
-    fi
+  change_batch=$(jq -n --arg name "$APP_FQDN" --arg target "$ALB_HOSTNAME" '
+    {Changes: [{Action: "UPSERT", ResourceRecordSet: {
+      Name: $name, Type: "CNAME", TTL: 300, ResourceRecords: [{Value: $target}]
+    }}]}') || return 1
+  CHANGE_ID=$(aws route53 change-resource-record-sets \
+    --hosted-zone-id "$HOSTED_ZONE_ID" --profile "$AWS_PROFILE" \
+    --change-batch "$change_batch" --query 'ChangeInfo.Id' \
+    --output text 2>/tmp/error.log) || {
+    logMessages /tmp/error.log
+    return 1
+  }
+  if [ -z "$CHANGE_ID" ] || [ "$CHANGE_ID" = None ]; then
+    echo "ERROR: Route53 did not return a change ID"
+    return 1
   fi
 
   echo " ▪ Route53 Change ID ...: $CHANGE_ID"
 
+echo hallo5
   # --------------------------------------------------------------------------
   # Wait for Route53 to become INSYNC
   # --------------------------------------------------------------------------
@@ -769,7 +973,7 @@ echo "XXX DNS_TARGET: $DNS_TARGET"
   n=0
   while [ $n -lt 60 ]; do
     STATUS=$(aws route53 get-change \
-      --id "$CHANGE_ID" \
+      --id "$CHANGE_ID" --profile "$AWS_PROFILE" \
       --query 'ChangeInfo.Status' \
       --output text 2>/tmp/error.log); ret=$?
 
@@ -777,7 +981,7 @@ echo "XXX DNS_TARGET: $DNS_TARGET"
       logMessages /tmp/error.log
       echo "ERROR: Failed to get Route53 change status"
       echo "       => aws route53 get-change --id $CHANGE_ID"
-      exit 1
+      return 1
     fi
 
     echo " ▪ Route53 Status ......: $STATUS"
@@ -790,14 +994,14 @@ echo "XXX DNS_TARGET: $DNS_TARGET"
   if [ "$STATUS" != "INSYNC" ]; then
     echo "ERROR: Route53 change did not become INSYNC"
     echo "       Change ID .......: $CHANGE_ID"
-    exit 1
+    return 1
   fi
 
   # --------------------------------------------------------------------------
   # Re-read Route53 record and confirm it now matches the ALB hostname
   # --------------------------------------------------------------------------
   FINAL_DNS_TARGET=$(aws route53 list-resource-record-sets \
-    --hosted-zone-id "$HOSTED_ZONE_ID" \
+    --hosted-zone-id "$HOSTED_ZONE_ID" --profile "$AWS_PROFILE" \
     --query "ResourceRecordSets[?Name == '${APP_FQDN}.'].ResourceRecords[0].Value" \
     --output text 2>/tmp/error.log); ret=$?
 
@@ -805,7 +1009,7 @@ echo "XXX DNS_TARGET: $DNS_TARGET"
     logMessages /tmp/error.log
     echo "ERROR: Failed to verify final Route53 DNS record"
     echo "       => aws route53 list-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID"
-    exit 1
+    return 1
   fi
 
   echo " ▪ FINAL_DNS_TARGET ....: $FINAL_DNS_TARGET"
@@ -814,7 +1018,7 @@ echo "XXX DNS_TARGET: $DNS_TARGET"
     echo "ERROR: Route53 record does not match current ALB hostname"
     echo "       Expected ........: $ALB_HOSTNAME"
     echo "       Found ...........: $FINAL_DNS_TARGET"
-    exit 1
+    return 1
   fi
 
   # --------------------------------------------------------------------------
@@ -849,12 +1053,12 @@ echo "XXX DNS_TARGET: $DNS_TARGET"
   [ "$RESOLVED_1" = "$ALB_HOSTNAME." -o "$RESOLVED_1" = "$ALB_HOSTNAME" ] && MATCH_1=1
 
   if [ $MATCH_8 -ne 1 -o $MATCH_1 -ne 1 ]; then
-    echo "ERROR: DNS propagation timeout"
+    echo " ▪ Route53 is configured; public DNS caches have not refreshed yet"
     echo "       FQDN ............: $APP_FQDN"
     echo "       Expected ........: $ALB_HOSTNAME"
     echo "       8.8.8.8 .........: $RESOLVED_8"
     echo "       1.1.1.1 .........: $RESOLVED_1"
-    exit 1
+    return 0
   fi
 
   echo " ▪ DNS record successfully propagated"
@@ -933,185 +1137,232 @@ deployApp() {
 # Return Value .......: Sets CERT_ARN
 # ------------------------------------------------------------------------------------------
 requestACMcertificate() {
-  # Skip this function if ROUTE53_DNS_UPDATES is disabled
-  [ "$ROUTE53_DNS_UPDATES" == "false" ] && return
 
-  HOSTED_ZONE_ID="$1"
-  ALB_REGION="$AWS_REGION"
-  CERT_DOMAIN="*.$ROUTE53_DOMAIN"
-  CERT_SAN="$ROUTE53_DOMAIN"
+  [ "${ROUTE53_DNS_UPDATES:-true}" == "false" ] && return 0
+
+  local HOSTED_ZONE_ID="$1"
+  local ALB_REGION="$EKS_REGION"
+  local CERT_DOMAIN="*.$ROUTE53_DOMAIN"
+  local CERT_SAN="$ROUTE53_DOMAIN"
+  local CERT_SAN_FOUND=""
+  local CERT_STATUS=""
+  local VALIDATION_NAME=""
+  local VALIDATION_VALUE=""
+  local VALIDATION_RECORDS=""
+  local CERT_LIST=""
+  local CERT_DETAILS=""
+  local CHANGE_BATCH=""
+  local ret=0
+  local n=0
 
   messageTitle "Ingress Certificate for ALB Load Balancer"
-  
-  if [ -z "$HOSTED_ZONE_ID" ]; then
-    echo "ERROR: Missing Route53 Hosted Zone ID"
-    echo "       => installIngressCertificate <route53-hosted-zone-id>"
-    exit 0
+
+  if [ -z "$HOSTED_ZONE_ID" ] || [ -z "$ALB_REGION" ] || \
+     [ -z "$ROUTE53_DOMAIN" ] || [ -z "$AWS_PROFILE" ]; then
+    echo "ERROR: Missing ACM certificate configuration"
+    return 1
   fi
 
   # ----------------------------------------------------------------------------------------
   # Check if we already have a valid ISSUED certificate
   # ----------------------------------------------------------------------------------------
-  CERT_ARN=$(aws acm list-certificates \
+  CERT_LIST=$(aws acm list-certificates \
     --region "$ALB_REGION" \
     --certificate-statuses ISSUED \
     --profile "$AWS_PROFILE" \
-    --output json 2>/tmp/error.log | jq -r --arg domain "$CERT_DOMAIN" '
-      .CertificateSummaryList
-      | map(select(.DomainName == $domain))
-      | .[0].CertificateArn // empty
-    '); ret=$?
+    --output json 2>/tmp/error.log)
+  ret=$?
 
   if [ $ret -ne 0 ]; then
     logMessages /tmp/error.log
-    echo "ERROR: Failed to check existing ACM certificates 11"
-    echo "       => aws acm list-certificates --region $ALB_REGION --certificate-statuses ISSUED --profile $AWS_PROFILE"
-    exit 1
+    echo "ERROR: Failed to check existing ACM certificates"
+    return 1
   fi
 
-  if [ -n "$CERT_ARN" ]; then
-    echo " ▪ Reusing existing ACM certificate"
-    echo " ▪ CERT_ARN ............: $CERT_ARN"
+  CERT_ARN=""
 
-    CERT_SAN_FOUND=$(aws acm describe-certificate \
-      --certificate-arn "$CERT_ARN" \
+  # Check all matching certificates until one with the required SAN is found.
+  while IFS= read -r CANDIDATE_ARN; do
+
+    [ -z "$CANDIDATE_ARN" ] && continue
+
+    CERT_DETAILS=$(aws acm describe-certificate \
+      --certificate-arn "$CANDIDATE_ARN" \
       --region "$ALB_REGION" \
-      --query 'Certificate.SubjectAlternativeNames' \
       --profile "$AWS_PROFILE" \
-      --output json 2>/tmp/error.log | jq -r --arg san "$CERT_SAN" '
-        if index($san) then "yes" else "no" end
-      '); ret=$?
+      --output json 2>/tmp/error.log)
+    ret=$?
 
     if [ $ret -ne 0 ]; then
       logMessages /tmp/error.log
       echo "ERROR: Failed to validate existing ACM certificate"
-      echo "       => aws acm describe-certificate --certificate-arn $CERT_ARN --region $ALB_REGION"
       return 1
     fi
 
-    if [ "$CERT_SAN_FOUND" != "yes" ]; then
-      echo " ▪ Existing certificate does not contain SAN $CERT_SAN"
-      echo " ▪ Requesting new ACM certificate"
-      CERT_ARN=""
-    fi
-  fi
+    CERT_SAN_FOUND=$(printf '%s' "$CERT_DETAILS" | jq -r \
+      --arg san "$CERT_SAN" \
+      'if (.Certificate.SubjectAlternativeNames // [] | index($san)) != null
+       then "yes" else "no" end')
 
-# aws acm list-certificates --region eu-north-1 --profile AdministratorAccess-149536468416
+    if [ "$CERT_SAN_FOUND" = "yes" ]; then
+      CERT_ARN="$CANDIDATE_ARN"
+      break
+    fi
+
+  done < <(printf '%s' "$CERT_LIST" | jq -r --arg domain "$CERT_DOMAIN" '
+    .CertificateSummaryList[]
+    | select(.DomainName == $domain)
+    | .CertificateArn
+  ')
+
+  if [ -n "$CERT_ARN" ]; then
+    echo " ▪ Valid ACM certificate already exists"
+    echo " ▪ CERT_ARN ............: $CERT_ARN"
+    return 0
+  fi
 
   # ----------------------------------------------------------------------------------------
   # Request new certificate if none exists
   # ----------------------------------------------------------------------------------------
-  if [ -z "$CERT_ARN" ]; then
-    echo " ▪ Request new ACM certificate"
+  echo " ▪ Request new ACM certificate in $ALB_REGION"
 
-    CERT_ARN=$(aws acm request-certificate \
-      --domain-name "$CERT_DOMAIN" \
-      --subject-alternative-names "$CERT_SAN" \
-      --validation-method DNS \
-      --profile "$AWS_PROFILE" \
-      --region "$ALB_REGION" \
-      --query 'CertificateArn' \
-      --output text); ret=$?
+  CERT_ARN=$(aws acm request-certificate \
+    --domain-name "$CERT_DOMAIN" \
+    --subject-alternative-names "$CERT_SAN" \
+    --validation-method DNS \
+    --profile "$AWS_PROFILE" \
+    --region "$ALB_REGION" \
+    --query 'CertificateArn' \
+    --output text 2>/tmp/error.log)
+  ret=$?
 
-    if [ $ret -ne 0 -o -z "$CERT_ARN" ]; then
-      logMessages /tmp/error.log
-      echo "ERROR: Requesting ACM certificate failed"
-      echo "       => aws acm request-certificate --domain-name $CERT_DOMAIN --subject-alternative-names $CERT_SAN --validation-method DNS --region $ALB_REGION --profile $AWS_PROFILE"
-      exit 0
-    fi
+  if [ $ret -ne 0 ] || [ -z "$CERT_ARN" ] || [ "$CERT_ARN" = "None" ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Requesting ACM certificate failed"
+    return 1
+  fi
 
-    echo " ▪ CERT_ARN ............: $CERT_ARN"
+  echo " ▪ CERT_ARN ............: $CERT_ARN"
 
-    # ACM may need a moment before the validation record is readable
-    sleep 5
+  # ----------------------------------------------------------------------------------------
+  # Wait until ACM provides the DNS validation record
+  # ----------------------------------------------------------------------------------------
+  echo " ▪ Waiting for ACM validation records..."
 
-    read -r VALIDATION_NAME VALIDATION_VALUE <<< "$(aws acm describe-certificate \
+  for ((n=0; n<30; n++)); do
+
+    VALIDATION_RECORDS=$(aws acm describe-certificate \
       --certificate-arn "$CERT_ARN" \
       --region "$ALB_REGION" \
       --profile "$AWS_PROFILE" \
       --query 'Certificate.DomainValidationOptions[].ResourceRecord' \
-      --output json 2>/tmp/error.log | jq -r '
-        map(select(.Name != null and .Value != null))
-        | unique_by(.Name,.Value)
-        | .[0]
-        | "\(.Name) \(.Value)"
-      ')"; ret=$?
-
-    if [ $ret -ne 0 -o -z "${VALIDATION_NAME:-}" -o -z "${VALIDATION_VALUE:-}" ]; then
-      logMessages /tmp/error.log
-      echo "ERROR: Reading ACM validation CNAME failed"
-      echo "       => aws acm describe-certificate --certificate-arn $CERT_ARN --region $ALB_REGION"
-      return 1
-    fi
-
-    echo " ▪ VALIDATION_NAME .....: $VALIDATION_NAME"
-    echo " ▪ VALIDATION_VALUE ....: $VALIDATION_VALUE"
-
-    export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_REGION
-    [ -n "${AWS_SESSION_TOKEN:-}" ] && export AWS_SESSION_TOKEN
-
-    echo " ▪ Create/Update Route53 validation CNAME"
-    aws route53 change-resource-record-sets \
-      --hosted-zone-id "$HOSTED_ZONE_ID" \
-      --profile "$AWS_PROFILE" \
-      --change-batch "{
-        \"Changes\": [{
-          \"Action\": \"UPSERT\",
-          \"ResourceRecordSet\": {
-            \"Name\": \"$VALIDATION_NAME\",
-            \"Type\": \"CNAME\",
-            \"TTL\": 300,
-            \"ResourceRecords\": [{
-              \"Value\": \"$VALIDATION_VALUE\"
-            }]
-          }
-        }]
-      }" > /tmp/error.log 2>&1; ret=$?
+      --output json 2>/tmp/error.log)
+    ret=$?
 
     if [ $ret -ne 0 ]; then
       logMessages /tmp/error.log
-      echo "ERROR: Creating Route53 validation CNAME failed"
-      echo "       => aws route53 change-resource-record-sets --hosted-zone-id $HOSTED_ZONE_ID ..."
+      echo "ERROR: Failed to read ACM validation records"
       return 1
     fi
 
-    # --------------------------------------------------------------------------------------
-    # Wait until certificate becomes ISSUED
-    # --------------------------------------------------------------------------------------
-    echo " ▪ Waiting for certificate to become ISSUED..."
-    while true; do
-      CERT_STATUS=$(aws acm describe-certificate \
-        --certificate-arn "$CERT_ARN" \
-        --region "$ALB_REGION" \
-        --profile "$AWS_PROFILE" \
-        --query 'Certificate.Status' \
-        --output text 2>/tmp/error.log); ret=$?
+    read -r VALIDATION_NAME VALIDATION_VALUE <<< \
+      "$(printf '%s' "$VALIDATION_RECORDS" | jq -r '
+        map(select(.Name != null and .Value != null))
+        | unique_by(.Name, .Value)
+        | .[0] // {}
+        | "\(.Name // "") \(.Value // "")"
+      ')"
 
-      if [ $ret -ne 0 ]; then
-        logMessages /tmp/error.log
-        echo "ERROR: Failed to read ACM certificate status"
-        echo "       => aws acm describe-certificate --certificate-arn $CERT_ARN --region $ALB_REGION --query 'Certificate.Status' --output text"
-        return 1
-      fi
+    if [ -n "$VALIDATION_NAME" ] && [ -n "$VALIDATION_VALUE" ]; then
+      break
+    fi
 
-      echo " ▪ Certificate Status ..: $CERT_STATUS"
+    sleep 5
+  done
 
-      [ "$CERT_STATUS" = "ISSUED" ] && break
-
-      if [ "$CERT_STATUS" = "FAILED" ]; then
-        echo "ERROR: ACM certificate request failed"
-        return 1
-      fi
-
-      sleep 10
-    done
-
-    echo " ▪ Ingress certificate installed successfully"
-
-  else
-    echo " ▪ Valid ACM certificate already exists"
-    echo " ▪ CERT_ARN ............: $CERT_ARN"
+  if [ -z "$VALIDATION_NAME" ] || [ -z "$VALIDATION_VALUE" ]; then
+    echo "ERROR: Timed out waiting for ACM validation records"
+    return 1
   fi
+
+  echo " ▪ VALIDATION_NAME .....: $VALIDATION_NAME"
+  echo " ▪ VALIDATION_VALUE ....: $VALIDATION_VALUE"
+
+  # ----------------------------------------------------------------------------------------
+  # Create / update Route53 validation CNAME
+  # ----------------------------------------------------------------------------------------
+  CHANGE_BATCH=$(jq -n \
+    --arg name "$VALIDATION_NAME" \
+    --arg value "$VALIDATION_VALUE" '
+    {
+      Changes: [{
+        Action: "UPSERT",
+        ResourceRecordSet: {
+          Name: $name,
+          Type: "CNAME",
+          TTL: 300,
+          ResourceRecords: [{Value: $value}]
+        }
+      }]
+    }
+  ')
+
+  echo " ▪ Create/Update Route53 validation CNAME"
+
+  aws route53 change-resource-record-sets \
+    --hosted-zone-id "$HOSTED_ZONE_ID" \
+    --profile "$AWS_PROFILE" \
+    --change-batch "$CHANGE_BATCH" \
+    > /tmp/error.log 2>&1
+  ret=$?
+
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Creating Route53 validation CNAME failed"
+    return 1
+  fi
+
+  # ----------------------------------------------------------------------------------------
+  # Wait until certificate becomes ISSUED
+  # ----------------------------------------------------------------------------------------
+  echo " ▪ Waiting for certificate to become ISSUED..."
+
+  for ((n=0; n<120; n++)); do
+
+    CERT_STATUS=$(aws acm describe-certificate \
+      --certificate-arn "$CERT_ARN" \
+      --region "$ALB_REGION" \
+      --profile "$AWS_PROFILE" \
+      --query 'Certificate.Status' \
+      --output text 2>/tmp/error.log)
+    ret=$?
+
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to read ACM certificate status"
+      return 1
+    fi
+
+    echo " ▪ Certificate Status ..: $CERT_STATUS"
+
+    if [ "$CERT_STATUS" = "ISSUED" ]; then
+      echo " ▪ Ingress certificate installed successfully"
+      echo " ▪ CERT_ARN ............: $CERT_ARN"
+      return 0
+    fi
+
+    if [ "$CERT_STATUS" = "FAILED" ] || \
+       [ "$CERT_STATUS" = "VALIDATION_TIMED_OUT" ] || \
+       [ "$CERT_STATUS" = "REVOKED" ]; then
+      echo "ERROR: ACM certificate request failed ($CERT_STATUS)"
+      return 1
+    fi
+
+    sleep 10
+  done
+
+  echo "ERROR: Timed out waiting for ACM certificate issuance"
+  return 1
 }
 
 # ------------------------------------------------------------------------------------------
@@ -1124,22 +1375,281 @@ requestACMcertificate() {
 # Return Value .......: prints CERT_ARN to stdout
 # ------------------------------------------------------------------------------------------
 getCertARN() {
-  DOMAIN="$1"
+  local DOMAIN="$1"
+  local CERT_LIST=""
+  local ret=0
 
   if [ -z "$DOMAIN" ]; then
     echo "ERROR: getCertARN requires a domain" >&2
-    exit 1
+    return 1
   fi
 
-  aws acm list-certificates \
-    --region "$AWS_REGION" \
+  CERT_LIST=$(aws acm list-certificates \
+    --region "$EKS_REGION" \
+    --profile "$AWS_PROFILE" \
     --certificate-statuses ISSUED \
-    --output json 2>/dev/null \
-  | jq -r --arg domain "$DOMAIN" '
-      .CertificateSummaryList
-      | map(select(.DomainName == $domain))
-      | .[0].CertificateArn // empty
-    '
+    --output json 2>/tmp/error.log)
+  ret=$?
+
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log >&2
+    echo "ERROR: Failed to list ACM certificates in $EKS_REGION" >&2
+    return 1
+  fi
+
+  printf '%s\n' "$CERT_LIST" | jq -r --arg domain "$DOMAIN" '
+    .CertificateSummaryList
+    | map(select(.DomainName == $domain))
+    | .[0].CertificateArn // empty
+  '
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: deployMCPServerPostgres
+# Function Purpose ...: Deploy a PostgreSQL MCP Server
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: 
+# Dependancies: ......: AWS_REGION, EKS_CLUSTER_NAME
+# ------------------------------------------------------------------------------------------
+# Return Value .......:
+# ------------------------------------------------------------------------------------------
+deployMCPServerPostgres() {
+  [ "$MCP_SERVER_PROSTRESQL" != "true" -a "$MCP_SERVER_PROSTRESQL" != "True" -a "$MCP_SERVER_PROSTRESQL" != "TRUE" ] && return
+
+  APP_NAMESPACE="mcp-server-postgresql"
+  APP_DEPLOYMENT_FILE="files/postgresql-mcp-demo.yaml"
+  APP_DEPLOYMENT="postgres-mcp"
+  APP_INGRESS="postgres-mcp-ingress"
+  APP_INGRESS_FILE="postgres-mcp-ingress.yaml"
+  APP_URL="demo.$ROUTE53_DOMAIN"
+      
+  messageTitle "Deploy PostgreSQL MCP Server"
+
+  CERT_ARN=$(getCertARN "*.$ROUTE53_DOMAIN")
+  ret=$?
+  if [ $ret -ne 0 -o -z "$CERT_ARN" ]; then
+    echo "ERROR: Failed to get Certificate ARN"
+    echo "       => getCertARN \"*.$ROUTE53_DOMAIN\""
+    return 1
+  fi
+
+  echo " ▪ CERT_ARN ............: $CERT_ARN"
+
+    sed -e "s|XXX_ARN_XXX|$CERT_ARN|g" -e "s|XXXDOMAINXXX|$ROUTE53_DOMAIN|g" files/$APP_INGRESS_FILE > /tmp/$APP_INGRESS_FILE
+
+    # Create Namespace if missing
+    kubectl get namespace "$APP_NAMESPACE" >/dev/null 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      echo " ▪ Create Namespace ....: $APP_NAMESPACE"
+      kubectl create namespace "$APP_NAMESPACE" > /tmp/error.log 2>&1; ret=$?
+      if [ $ret -ne 0 ]; then
+        logMessages /tmp/error.log
+        echo "ERROR: Creating namespace failed"
+        echo "       => kubectl create namespace $APP_NAMESPACE"
+        return 1
+      fi
+    else
+      echo " ▪ Namespace already exists"
+    fi
+
+    # Deploy Demo App only if not already installed
+    kubectl -n "$APP_NAMESPACE" get deployment "$APP_DEPLOYMENT" >/dev/null 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      echo " ▪ Rollout Deployment ..: $APP_DEPLOYMENT"
+      #kubectl apply -n $APP_NAMESPACE -f $APP_DEPLOYMENT_FILE > /tmp/error.log 2>&1; ret=$?
+      kubectl  apply -f $APP_DEPLOYMENT_FILE --namespace=$APP_NAMESPACE > /tmp/error.log 2>&1; ret=$?
+      if [ $ret -ne 0 ]; then
+        logMessages /tmp/error.log
+        echo "ERROR: Deployment installation failed"
+        echo "       => kubectl apply -f $APP_DEPLOYMENT_FILE"
+        return 1
+      fi
+    else
+      echo " ▪ Demo App already installed"
+    fi
+
+    echo " ▪ Waiting for Deployment to become ready..."
+    kubectl -n "$APP_NAMESPACE" rollout status deployment/"$APP_DEPLOYMENT" --timeout=5m > /tmp/error.log 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Demo App deployment did not become ready"
+      echo "       => kubectl -n $APP_NAMESPACE rollout status deployment/$APP_DEPLOYMENT --timeout=5m"
+      return 1
+    fi
+
+    ########################################################
+    ################ INSTALL INGRESS #######################
+    ########################################################
+
+    # Deploy Ingress only if not already installed
+    kubectl -n "$APP_NAMESPACE" get ingress "$APP_INGRESS" >/dev/null 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      echo " ▪ Install Ingress .....: $APP_INGRESS"
+      kubectl -n $APP_NAMESPACE apply -f /tmp/$APP_INGRESS_FILE > /tmp/error.log 2>&1; ret=$?
+      if [ $ret -ne 0 ]; then
+        logMessages /tmp/error.log
+        echo "ERROR: Installing demo app ingress failed"
+        echo "       => kubectl -n $APP_NAMESPACE apply -f /tmp/$APP_INGRESS_FILE"
+        return 1
+      fi
+    else
+      echo " ▪ Demo App Ingress already installed"
+    fi
+
+    echo " ▪ Waiting for Deployment to become ready..."
+    kubectl -n "$APP_NAMESPACE" rollout status deployment/"$APP_DEPLOYMENT" --timeout=5m > /tmp/error.log 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Demo App deployment did not become ready"
+      echo "       => kubectl -n $APP_NAMESPACE rollout status deployment/$APP_DEPLOYMENT --timeout=5m"
+      return 1
+    fi
+
+    echo " ▪ Waiting for Ingress Address..."
+    n=0
+    while [ $n -lt 30 ]; do
+      INGRESS_ADDR=$(kubectl -n "$APP_NAMESPACE" get ingress "$APP_INGRESS" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+      [ -n "$INGRESS_ADDR" ] && break
+      sleep 10
+      let n=n+1
+    done
+
+    echo " ▪ Ingress Address .....: $INGRESS_ADDR"
+    echo " ▪ Public DNS Address ..: postgres-mcp.$ROUTE53_DOMAIN"
+
+   updateAppDNS "$APP_NAMESPACE" "postgres-mcp" "postgres-mcp.$ROUTE53_DOMAIN" "$ROUTE53_HOSTED_ZONE_ID"
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: deployMCPServerKubernetes
+# Function Purpose ...: Deploy a Kubernetes MCP Server 
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......:
+# Dependancies: ......: AWS_REGION, EKS_CLUSTER_NAME
+# ------------------------------------------------------------------------------------------
+# Return Value .......:
+# ------------------------------------------------------------------------------------------
+deployMCPServerKubernetes() {
+  [ "$MCP_SERVER_KUBERNETES" != "true" -a "$MCP_SERVER_KUBERNETES" != "True" -a "$MCP_SERVER_KUBERNETES" != "TRUE" ] && return
+
+  APP_NAMESPACE="mcp-server-kubernetes"
+  APP_DEPLOYMENT="mcp-server"
+  APP_DEPLOYMENT_FILE="files/kubernetes-mcp-demo.yaml"
+  APP_INGRESS="mcp-server-ingress"
+  APP_URL="demo.$ROUTE53_DOMAIN"
+
+  messageTitle "Deploy Kubernetes MCP Server"
+
+  CERT_ARN=$(getCertARN "*.$ROUTE53_DOMAIN")
+  ret=$?
+  if [ $ret -ne 0 -o -z "$CERT_ARN" ]; then
+    echo "ERROR: Failed to get Certificate ARN"
+    echo "       => getCertARN \"*.$ROUTE53_DOMAIN\""
+    return 1
+  fi
+
+  echo " ▪ CERT_ARN ............: $CERT_ARN"
+
+  # Deploy MCP Server only if not already installed
+  kubectl -n "$APP_NAMESPACE" get deployment "$APP_DEPLOYMENT" >/dev/null 2>&1; ret=$?
+  if [ $ret -ne 0 ]; then
+    echo " ▪ Rollout Deployment ..: $APP_DEPLOYMENT"
+    kubectl apply -n $APP_NAMESPACE -f files/postgresql-mcp-demo.yaml > /tmp/error.log 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Deployment installation failed"
+      echo "       => kubectl apply -f files/postgresql-mcp-demo.yaml"
+      return 1
+    fi
+  else
+    echo " ▪ MCP Server already installed"
+  fi
+
+#  kubectl apply -f files/postgresql-mcp-demo.yaml
+
+  echo " ▪ Waiting for Deployment to become ready..."
+  kubectl -n "$APP_NAMESPACE" rollout status deployment/"$APP_DEPLOYMENT" --timeout=5m > /tmp/error.log 2>&1; ret=$?
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Demo App deployment did not become ready"
+    echo "       => kubectl -n $APP_NAMESPACE rollout status deployment/$APP_DEPLOYMENT --timeout=5m"
+    return 1
+  fi
+
+
+exit
+
+  if [ "$stt" != "deployed" ]; then
+    cp files/demo-app.yaml /tmp/demo-app.yaml
+    sed -e "s|XXX_ARN_XXX|$CERT_ARN|g" -e "s|XXXDOMAINXXX|$ROUTE53_DOMAIN|g" files/demo-app-ingress-template.yaml > /tmp/demo-app-ingress.yaml
+
+    # Create Namespace if missing
+    kubectl get namespace "$APP_NAMESPACE" >/dev/null 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      echo " ▪ Create Namespace ....: $APP_NAMESPACE"
+      kubectl create namespace "$APP_NAMESPACE" > /tmp/error.log 2>&1; ret=$?
+      if [ $ret -ne 0 ]; then
+        logMessages /tmp/error.log
+        echo "ERROR: Creating namespace failed"
+        echo "       => kubectl create namespace $APP_NAMESPACE"
+        return 1
+      fi
+    else
+      echo " ▪ Namespace already exists"
+    fi
+
+    # Deploy Demo App only if not already installed
+    kubectl -n "$APP_NAMESPACE" get deployment "$APP_DEPLOYMENT" >/dev/null 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      echo " ▪ Install Demo App ....: $APP_DEPLOYMENT"
+      kubectl apply -n $APP_NAMESPACE  -f /tmp/demo-app.yaml > /tmp/error.log 2>&1; ret=$?
+      if [ $ret -ne 0 ]; then
+        logMessages /tmp/error.log
+        echo "ERROR: Installing demo app failed"
+        echo "       => kubectl apply -f /tmp/demo-app.yaml"
+        return 1
+      fi
+    else
+      echo " ▪ Demo App already installed"
+    fi
+
+    # Deploy Ingress only if not already installed
+    kubectl -n "$APP_NAMESPACE" get ingress "$APP_INGRESS" >/dev/null 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      echo " ▪ Install Ingress .....: $APP_INGRESS"
+      kubectl -n $APP_NAMESPACE apply -f /tmp/demo-app-ingress.yaml > /tmp/error.log 2>&1; ret=$?
+      if [ $ret -ne 0 ]; then
+        logMessages /tmp/error.log
+        echo "ERROR: Installing demo app ingress failed"
+        echo "       => kubectl -n $APP_NAMESPACE apply -f /tmp/demo-app-ingress.yaml"
+        return 1
+      fi
+    else
+      echo " ▪ Demo App Ingress already installed"
+    fi
+
+    echo " ▪ Waiting for Deployment to become ready..."
+    kubectl -n "$APP_NAMESPACE" rollout status deployment/"$APP_DEPLOYMENT" --timeout=5m > /tmp/error.log 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Demo App deployment did not become ready"
+      echo "       => kubectl -n $APP_NAMESPACE rollout status deployment/$APP_DEPLOYMENT --timeout=5m"
+      return 1
+    fi
+
+    echo " ▪ Waiting for Ingress Address..."
+    n=0
+    while [ $n -lt 30 ]; do
+      INGRESS_ADDR=$(kubectl -n "$APP_NAMESPACE" get ingress "$APP_INGRESS" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+      [ -n "$INGRESS_ADDR" ] && break
+      sleep 10
+      let n=n+1
+    done
+
+    echo " ▪ Ingress Address .....: $INGRESS_ADDR"
+    echo " ▪ Public DNS Address ..: kubernetes-mcp.fortidemo.ch" 
+
+  fi
 }
 
 # ------------------------------------------------------------------------------------------
@@ -1152,7 +1662,7 @@ getCertARN() {
 # Return Value .......:
 # ------------------------------------------------------------------------------------------
 deployDemoApp() {
-
+  APP_NAME="demo-app"
   APP_NAMESPACE="demo-app"
   APP_DEPLOYMENT="demo-app"
   APP_INGRESS="demo-app-ingress"
@@ -1170,73 +1680,76 @@ deployDemoApp() {
 
   echo " ▪ CERT_ARN ............: $CERT_ARN"
 
-  cp files/demo-app.yaml /tmp/demo-app.yaml
-  sed -e "s|XXX_ARN_XXX|$CERT_ARN|g" -e "s|XXXDOMAINXXX|$ROUTE53_DOMAIN|g" files/demo-app-ingress-template.yaml > /tmp/demo-app-ingress.yaml
+    cp files/demo-app.yaml /tmp/demo-app.yaml
+    sed -e "s|XXX_ARN_XXX|$CERT_ARN|g" -e "s|XXXDOMAINXXX|$ROUTE53_DOMAIN|g" files/demo-app-ingress-template.yaml > /tmp/demo-app-ingress.yaml
 
-  # Create Namespace if missing
-  kubectl get namespace "$APP_NAMESPACE" >/dev/null 2>&1; ret=$?
-  if [ $ret -ne 0 ]; then
-    echo " ▪ Create Namespace ....: $APP_NAMESPACE"
-    kubectl create namespace "$APP_NAMESPACE" > /tmp/error.log 2>&1; ret=$?
+    # Create Namespace if missing
+    kubectl get namespace "$APP_NAMESPACE" >/dev/null 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      echo " ▪ Create Namespace ....: $APP_NAMESPACE"
+      kubectl create namespace "$APP_NAMESPACE" > /tmp/error.log 2>&1; ret=$?
+      if [ $ret -ne 0 ]; then
+        logMessages /tmp/error.log
+        echo "ERROR: Creating namespace failed"
+        echo "       => kubectl create namespace $APP_NAMESPACE"
+        return 1
+      fi
+    else
+      echo " ▪ Namespace already exists"
+    fi
+
+    # Deploy Demo App only if not already installed
+    kubectl -n "$APP_NAMESPACE" get deployment "$APP_DEPLOYMENT" >/dev/null 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      echo " ▪ Install Demo App ....: $APP_DEPLOYMENT"
+      kubectl apply -n $APP_NAMESPACE  -f /tmp/demo-app.yaml > /tmp/error.log 2>&1; ret=$?
+      if [ $ret -ne 0 ]; then
+        logMessages /tmp/error.log
+        echo "ERROR: Installing demo app failed"
+        echo "       => kubectl apply -f /tmp/demo-app.yaml"
+        return 1
+      fi
+    else
+      echo " ▪ Demo App already installed"
+    fi
+
+    # Deploy Ingress only if not already installed
+    kubectl -n "$APP_NAMESPACE" get ingress "$APP_INGRESS" >/dev/null 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      echo " ▪ Install Ingress .....: $APP_INGRESS"
+      kubectl -n $APP_NAMESPACE apply -f /tmp/demo-app-ingress.yaml > /tmp/error.log 2>&1; ret=$?
+      if [ $ret -ne 0 ]; then
+        logMessages /tmp/error.log
+        echo "ERROR: Installing demo app ingress failed"
+        echo "       => kubectl -n $APP_NAMESPACE apply -f /tmp/demo-app-ingress.yaml"
+        return 1
+      fi
+    else
+      echo " ▪ Demo App Ingress already installed"
+    fi
+
+    echo " ▪ Waiting for Deployment to become ready..."
+    kubectl -n "$APP_NAMESPACE" rollout status deployment/"$APP_DEPLOYMENT" --timeout=5m > /tmp/error.log 2>&1; ret=$?
     if [ $ret -ne 0 ]; then
       logMessages /tmp/error.log
-      echo "ERROR: Creating namespace failed"
-      echo "       => kubectl create namespace $APP_NAMESPACE"
+      echo "ERROR: Demo App deployment did not become ready"
+      echo "       => kubectl -n $APP_NAMESPACE rollout status deployment/$APP_DEPLOYMENT --timeout=5m"
       return 1
     fi
-  else
-    echo " ▪ Namespace already exists"
-  fi
 
-  # Deploy Demo App only if not already installed
-  kubectl -n "$APP_NAMESPACE" get deployment "$APP_DEPLOYMENT" >/dev/null 2>&1; ret=$?
-  if [ $ret -ne 0 ]; then
-    echo " ▪ Install Demo App ....: $APP_DEPLOYMENT"
-    kubectl apply -n $APP_NAMESPACE  -f /tmp/demo-app.yaml > /tmp/error.log 2>&1; ret=$?
-    if [ $ret -ne 0 ]; then
-      logMessages /tmp/error.log
-      echo "ERROR: Installing demo app failed"
-      echo "       => kubectl apply -f /tmp/demo-app.yaml"
-      return 1
-    fi
-  else
-    echo " ▪ Demo App already installed"
-  fi
+    echo " ▪ Waiting for Ingress Address..."
+    n=0
+    while [ $n -lt 30 ]; do
+      INGRESS_ADDR=$(kubectl -n "$APP_NAMESPACE" get ingress "$APP_INGRESS" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
+      [ -n "$INGRESS_ADDR" ] && break
+      sleep 10
+      let n=n+1
+    done
 
-  # Deploy Ingress only if not already installed
-  kubectl -n "$APP_NAMESPACE" get ingress "$APP_INGRESS" >/dev/null 2>&1; ret=$?
-  if [ $ret -ne 0 ]; then
-    echo " ▪ Install Ingress .....: $APP_INGRESS"
-    kubectl -n $APP_NAMESPACE apply -f /tmp/demo-app-ingress.yaml > /tmp/error.log 2>&1; ret=$?
-    if [ $ret -ne 0 ]; then
-      logMessages /tmp/error.log
-      echo "ERROR: Installing demo app ingress failed"
-      echo "       => kubectl -n $APP_NAMESPACE apply -f /tmp/demo-app-ingress.yaml"
-      return 1
-    fi
-  else
-    echo " ▪ Demo App Ingress already installed"
-  fi
+    echo " ▪ Ingress Address .....: $INGRESS_ADDR"
 
-  echo " ▪ Waiting for Deployment to become ready..."
-  kubectl -n "$APP_NAMESPACE" rollout status deployment/"$APP_DEPLOYMENT" --timeout=5m > /tmp/error.log 2>&1; ret=$?
-  if [ $ret -ne 0 ]; then
-    logMessages /tmp/error.log
-    echo "ERROR: Demo App deployment did not become ready"
-    echo "       => kubectl -n $APP_NAMESPACE rollout status deployment/$APP_DEPLOYMENT --timeout=5m"
-    return 1
-  fi
-
-  echo " ▪ Waiting for Ingress Address..."
-  n=0
-  while [ $n -lt 30 ]; do
-    INGRESS_ADDR=$(kubectl -n "$APP_NAMESPACE" get ingress "$APP_INGRESS" -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)
-    [ -n "$INGRESS_ADDR" ] && break
-    sleep 10
-    let n=n+1
-  done
-
-  echo " ▪ Ingress Address .....: $INGRESS_ADDR"
+  updateAppDNS "$APP_NAME" "$APP_NAME" "demo.$ROUTE53_DOMAIN" "$ROUTE53_HOSTED_ZONE_ID"
+  testAppDNS "demo.$ROUTE53_DOMAIN"
 }
 
 # ------------------------------------------------------------------------------------------
@@ -1325,7 +1838,7 @@ testAppDNS() {
 
   APP_FQDN="$1"
 
-  messageTitle "Test Application DNS and Connectivity"
+  echo " ▪ Test Appliication ...: https://$APP_FQDN"
 
   if [ -z "$APP_FQDN" ]; then
     echo "ERROR: Missing arguments"
@@ -1389,102 +1902,199 @@ testAppDNS() {
 # Return Value .......:
 # ------------------------------------------------------------------------------------------
 deleteEFSstorage() {
+
   EFS_NAME="efs-$EKS_CLUSTER_NAME"
 
   echo " ▪ checking Amazon EFS resources"
 
-  EFS_FILE_SYSTEM_ID=$(aws efs describe-file-systems \
-    --region "$AWS_REGION" \
-    --output json 2>/dev/null | jq -r --arg key "$EFS_NAME" '
-      .FileSystems[]
-      | select(.Name == $key)
-      | .FileSystemId
-    ' | head -1)
-
-  if [ -z "$EFS_FILE_SYSTEM_ID" ]; then
-    echo " ▪ Amazon EFS already deleted"
-    return
-  fi
-
-  echo " ▪ deleting Amazon EFS FileSystem ($EFS_FILE_SYSTEM_ID)"
-
-  aws efs describe-access-points \
-    --file-system-id "$EFS_FILE_SYSTEM_ID" \
-    --region "$AWS_REGION" \
-    > /tmp/efs-ap.json 2>/dev/null
-
-  for ap in $(jq -r '.AccessPoints[]? | .AccessPointId' /tmp/efs-ap.json); do
-    echo "   ▪ delete EFS Access Point ($ap)"
-    aws efs delete-access-point \
-      --access-point-id "$ap" \
-      --region "$AWS_REGION" > /tmp/error.log 2>&1; ret=$?
-    if [ $ret -ne 0 ]; then
-      logMessages /tmp/error.log
-      echo "ERROR: failed to delete EFS Access Point ($ap)"
-      exit 1
-    fi
-  done
-
-  while true; do
-    aws efs describe-access-points \
-      --file-system-id "$EFS_FILE_SYSTEM_ID" \
-      --region "$AWS_REGION" \
-      > /tmp/efs-ap.json 2>/dev/null
-
-    apLeft=$(jq -r '[.AccessPoints[]?] | length' /tmp/efs-ap.json)
-    [ "$apLeft" == "0" ] && break
-
-    sleep 10
-  done
-
-  aws efs describe-mount-targets \
-    --file-system-id "$EFS_FILE_SYSTEM_ID" \
-    --region "$AWS_REGION" \
-    > /tmp/efs-mt.json 2>/dev/null
-
-  for mt in $(jq -r '.MountTargets[]? | .MountTargetId' /tmp/efs-mt.json); do
-    echo "   ▪ delete EFS Mount Target ($mt)"
-    aws efs delete-mount-target \
-      --mount-target-id "$mt" \
-      --region "$AWS_REGION" > /tmp/error.log 2>&1; ret=$?
-    if [ $ret -ne 0 ]; then
-      logMessages /tmp/error.log
-      echo "ERROR: failed to delete EFS Mount Target ($mt)"
-      exit 1
-    fi
-  done
-
-  while true; do
-    aws efs describe-mount-targets \
-      --file-system-id "$EFS_FILE_SYSTEM_ID" \
-      --region "$AWS_REGION" \
-      > /tmp/efs-mt.json 2>/dev/null
-
-    mtLeft=$(jq -r '[.MountTargets[]?] | length' /tmp/efs-mt.json)
-    [ "$mtLeft" == "0" ] && break
-
-    sleep 10
-  done
-
-  aws efs delete-file-system \
-    --file-system-id "$EFS_FILE_SYSTEM_ID" \
-    --region "$AWS_REGION" > /tmp/error.log 2>&1; ret=$?
+  EFS_FILE_SYSTEM_IDS=$(aws efs describe-file-systems \
+    --profile "$AWS_PROFILE" \
+    --region "$EKS_REGION" \
+    --query "FileSystems[?Name=='$EFS_NAME'].FileSystemId" \
+    --output text 2>/tmp/error.log)
+  ret=$?
 
   if [ $ret -ne 0 ]; then
     logMessages /tmp/error.log
-    echo "ERROR: failed to delete EFS FileSystem ($EFS_FILE_SYSTEM_ID)"
-    exit 1
+    echo "ERROR: Failed to list Amazon EFS filesystems"
+    return 1
   fi
 
-  while true; do
-    aws efs describe-file-systems \
+  if [ -z "$EFS_FILE_SYSTEM_IDS" ] || [ "$EFS_FILE_SYSTEM_IDS" = "None" ]; then
+    echo " ▪ Amazon EFS already deleted"
+    return 0
+  fi
+
+  if [ "$(echo "$EFS_FILE_SYSTEM_IDS" | wc -w | tr -d ' ')" -ne 1 ]; then
+    echo "ERROR: Multiple EFS filesystems named $EFS_NAME found"
+    echo "       $EFS_FILE_SYSTEM_IDS"
+    return 1
+  fi
+
+  EFS_FILE_SYSTEM_ID="$EFS_FILE_SYSTEM_IDS"
+
+  echo " ▪ deleting Amazon EFS FileSystem ($EFS_FILE_SYSTEM_ID)"
+
+  EFS_ACCESS_POINTS=$(aws efs describe-access-points \
+    --file-system-id "$EFS_FILE_SYSTEM_ID" \
+    --profile "$AWS_PROFILE" \
+    --region "$EKS_REGION" \
+    --query 'AccessPoints[].AccessPointId' \
+    --output text 2>/tmp/error.log)
+  ret=$?
+
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to list EFS Access Points"
+    return 1
+  fi
+
+  for ap in $EFS_ACCESS_POINTS; do
+
+    echo "   ▪ delete EFS Access Point ($ap)"
+
+    aws efs delete-access-point \
+      --access-point-id "$ap" \
+      --profile "$AWS_PROFILE" \
+      --region "$EKS_REGION" > /tmp/error.log 2>&1
+    ret=$?
+
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to delete EFS Access Point ($ap)"
+      return 1
+    fi
+  done
+
+  echo " ▪ Waiting for EFS Access Points deletion..."
+
+  for i in {1..60}; do
+
+    EFS_ACCESS_POINTS=$(aws efs describe-access-points \
       --file-system-id "$EFS_FILE_SYSTEM_ID" \
-      --region "$AWS_REGION" >/dev/null 2>&1
-    [ $? -ne 0 ] && break
+      --profile "$AWS_PROFILE" \
+      --region "$EKS_REGION" \
+      --query 'AccessPoints[].AccessPointId' \
+      --output text 2>/tmp/error.log)
+    ret=$?
+
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to check EFS Access Points"
+      return 1
+    fi
+
+    [ -z "$EFS_ACCESS_POINTS" ] && break
+
     sleep 10
   done
 
-  echo " ▪ Amazon EFS successfully deleted"
+  if [ -n "$EFS_ACCESS_POINTS" ]; then
+    echo "ERROR: Timed out waiting for EFS Access Points deletion"
+    return 1
+  fi
+
+  EFS_MOUNT_TARGETS=$(aws efs describe-mount-targets \
+    --file-system-id "$EFS_FILE_SYSTEM_ID" \
+    --profile "$AWS_PROFILE" \
+    --region "$EKS_REGION" \
+    --query 'MountTargets[].MountTargetId' \
+    --output text 2>/tmp/error.log)
+  ret=$?
+
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to list EFS Mount Targets"
+    return 1
+  fi
+
+  for mt in $EFS_MOUNT_TARGETS; do
+
+    echo "   ▪ delete EFS Mount Target ($mt)"
+
+    aws efs delete-mount-target \
+      --mount-target-id "$mt" \
+      --profile "$AWS_PROFILE" \
+      --region "$EKS_REGION" > /tmp/error.log 2>&1
+    ret=$?
+
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to delete EFS Mount Target ($mt)"
+      return 1
+    fi
+  done
+
+  echo " ▪ Waiting for EFS Mount Targets deletion..."
+
+  for i in {1..60}; do
+
+    EFS_MOUNT_TARGETS=$(aws efs describe-mount-targets \
+      --file-system-id "$EFS_FILE_SYSTEM_ID" \
+      --profile "$AWS_PROFILE" \
+      --region "$EKS_REGION" \
+      --query 'MountTargets[].MountTargetId' \
+      --output text 2>/tmp/error.log)
+    ret=$?
+
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to check EFS Mount Targets"
+      return 1
+    fi
+
+    [ -z "$EFS_MOUNT_TARGETS" ] && break
+
+    sleep 10
+  done
+
+  if [ -n "$EFS_MOUNT_TARGETS" ]; then
+    echo "ERROR: Timed out waiting for EFS Mount Targets deletion"
+    return 1
+  fi
+
+  echo " ▪ Deleting EFS FileSystem ($EFS_FILE_SYSTEM_ID)"
+
+  aws efs delete-file-system \
+    --file-system-id "$EFS_FILE_SYSTEM_ID" \
+    --profile "$AWS_PROFILE" \
+    --region "$EKS_REGION" > /tmp/error.log 2>&1
+  ret=$?
+
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to delete EFS FileSystem ($EFS_FILE_SYSTEM_ID)"
+    return 1
+  fi
+
+  echo " ▪ Waiting for EFS FileSystem deletion..."
+
+  for i in {1..60}; do
+
+    EFS_STATUS=$(aws efs describe-file-systems \
+      --file-system-id "$EFS_FILE_SYSTEM_ID" \
+      --profile "$AWS_PROFILE" \
+      --region "$EKS_REGION" \
+      --query 'FileSystems[0].LifeCycleState' \
+      --output text 2>/tmp/error.log)
+    ret=$?
+
+    if [ $ret -ne 0 ]; then
+      if grep -q 'FileSystemNotFound' /tmp/error.log; then
+        echo " ▪ Amazon EFS successfully deleted"
+        return 0
+      fi
+
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to check EFS FileSystem deletion"
+      return 1
+    fi
+
+    sleep 10
+  done
+
+  echo "ERROR: Timed out waiting for EFS FileSystem deletion"
+  return 1
 }
 
 # ------------------------------------------------------------------------------------------
@@ -1492,52 +2102,122 @@ deleteEFSstorage() {
 # Function Purpose ...: Delete EFS NodeGroup
 # ------------------------------------------------------------------------------------------
 # Argument ($1) ......:
-# Dependancies: ......: AWS_REGION, EKS_CLUSTER_NAME
+# Dependencies: ......: AWS_PROFILE, EKS_REGION, EKS_CLUSTER_NAME
 # ------------------------------------------------------------------------------------------
 # Return Value .......:
 # ------------------------------------------------------------------------------------------
 deleteEKSnodeGroup() {
-  nodegroup=$(aws eks list-nodegroups  --cluster-name $EKS_CLUSTER_NAME --region $AWS_REGION  --no-cli-pager 2>/dev/null | jq -r '.nodegroups[]')
-  if [ "$nodegroup" == "gpu-ondemand-ng" -o "$nodegroup" == "gpu-spot-ng"  ]; then
-    echo " ▪ deleting EKS NodeGroup ($nodegroup)"
-  
+  messageTitle "Delete EKS Cluster and Node Groups"
+
+  nodegroups=$(aws eks list-nodegroups \
+    --cluster-name "$EKS_CLUSTER_NAME" \
+    --profile "$AWS_PROFILE" \
+    --region "$EKS_REGION" \
+    --query 'nodegroups[]' \
+    --output text 2>/tmp/error.log)
+  ret=$?
+
+  if [ $ret -ne 0 ]; then
+
+    if grep -q 'ResourceNotFoundException' /tmp/error.log; then
+      echo " ▪ EKS Cluster ($EKS_CLUSTER_NAME) already deleted"
+      echo " ▪ GPU EKS NodeGroups already deleted"
+      return 0
+    fi
+
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to list EKS node groups"
+    return 1
+  fi
+
+  FOUND=0
+
+  for nodegroup in $nodegroups; do
+
+    if [ "$nodegroup" != "gpu-ondemand-ng" ] && [ "$nodegroup" != "gpu-spot-ng" ]; then
+      continue
+    fi
+
+    FOUND=1
+
+    echo " ▪ Deleting EKS NodeGroup ($nodegroup)"
+
     eksctl delete nodegroup \
-      --cluster $EKS_CLUSTER_NAME \
-      --name $nodegroup \
-      --disable-eviction \
+      --cluster "$EKS_CLUSTER_NAME" \
+      --name "$nodegroup" \
       --profile "$AWS_PROFILE" \
-      --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+      --region "$EKS_REGION" \
+      --disable-eviction > /tmp/error.log 2>&1
+    ret=$?
 
     if [ $ret -ne 0 ]; then
       logMessages /tmp/error.log
-      echo "ERROR: failed to delete NodeGroup"
-      echo "       => eksctl delete nodegroup --name $nodegroup --region $AWS_REGION"
-      exit
+      echo "ERROR: Failed to delete EKS NodeGroup ($nodegroup)"
+      return 1
     fi
 
-    NODEGROUP="$EKS_CLUSTER_NAME"
+    echo " ▪ Waiting for EKS NodeGroup ($nodegroup) deletion..."
 
-    while true; do
-      status=$(aws eks describe-nodegroup \
-        --cluster-name "$EKS_CLUSTER_NAME" \
-        --nodegroup-name "$NODEGROUP" \
-        --region "$AWS_REGION" \
-        --query 'nodegroup.status' \
-        --output text 2>/dev/null)
-  
-      if [ $? -ne 0 ]; then
-        break
+    aws eks wait nodegroup-deleted \
+      --cluster-name "$EKS_CLUSTER_NAME" \
+      --nodegroup-name "$nodegroup" \
+      --profile "$AWS_PROFILE" \
+      --region "$EKS_REGION" > /tmp/error.log 2>&1
+    ret=$?
+
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Timed out waiting for EKS NodeGroup ($nodegroup) deletion"
+      return 1
+    fi
+
+    echo " ▪ EKS NodeGroup ($nodegroup) successfully deleted"
+
+  done
+
+  if [ $FOUND -eq 0 ]; then
+    echo " ▪ GPU EKS NodeGroups already deleted"
+  fi
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: deleteELBv2LoadBalancerOld
+# Function Purpose ...: Delete ELBv2 Load Balancer
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......:
+# Dependancies: ......: AWS_REGION, EKS_CLUSTER_NAME
+# ------------------------------------------------------------------------------------------
+# Return Value .......:
+# ------------------------------------------------------------------------------------------
+deleteELBv2LoadBalancerOld() {
+  LB_ARN=$(aws elbv2 describe-load-balancers --profile $AWS_PROFILE --region $EKS_REGION | jq -r '.LoadBalancers[].LoadBalancerArn')
+  if [ "$LB_ARN" != "" ]; then
+    for arn in $LB_ARN; do
+      echo " ▪ deleting ALB Load Balancer ($arn)"
+      aws elbv2 delete-load-balancer --load-balancer-arn "$arn" --profile $AWS_PROFILE --region $EKS_REGION > /tmp/error.log 2>&1; ret=$?
+      if [ $ret -ne 0 ]; then
+        logMessages /tmp/error.log
+        echo "ERROR: failed to delete load-balancer"
+        echo "       => aws elbv2 delete-load-balancer --load-balancer-arn "$arn" --profile $AWS_PROFILE --region $EKS_REGION"
+        exit
       fi
   
-      sleep 15
+      while aws elbv2 describe-load-balancers \
+        --profile $AWS_PROFILE \
+        --load-balancer-arns "$arn" \
+        --region $EKS_REGION >/dev/null 2>&1; do
+        sleep 10
+      done
     done
-  else
-    echo " ▪ EKS NodeGroup already deleted"
+  else 
+    echo " ▪ All ALB Load Balancers allredy deleted"
   fi
 }
 
 # ------------------------------------------------------------------------------------------
-# Function Name ......: deleteELBv2LoadBalancer
+# Function Name ......: deleteELBv2LoadBalancerOld
 # Function Purpose ...: Delete ELBv2 Load Balancer
 # ------------------------------------------------------------------------------------------
 # Argument ($1) ......:
@@ -1546,24 +2226,75 @@ deleteEKSnodeGroup() {
 # Return Value .......:
 # ------------------------------------------------------------------------------------------
 deleteELBv2LoadBalancer() {
-  LB_ARN=$(aws elbv2 describe-load-balancers --region $AWS_REGION | jq -r '.LoadBalancers[].LoadBalancerArn')
-  if [ "$LB_ARN" != "" ]; then
-    echo " ▪ deleting ALB Load Balancer ($LB_ARN)"
-    aws elbv2 delete-load-balancer --load-balancer-arn "$LB_ARN" --region $AWS_REGION > /tmp/error.log 2>&1; ret=$?
+  messageTitle "Delete EKS Application Load Balancers"
+
+  LB_ARNS=$(aws elbv2 describe-load-balancers \
+    --profile "$AWS_PROFILE" \
+    --region "$EKS_REGION" \
+    --query 'LoadBalancers[].LoadBalancerArn' \
+    --output text 2>/tmp/error.log)
+  ret=$?
+
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to list load balancers"
+    return 1
+  fi
+
+  if [ -z "$LB_ARNS" ]; then
+    echo " ▪ No load balancers found"
+    return 0
+  fi
+
+  FOUND=0
+
+  for arn in $LB_ARNS; do
+
+    CLUSTER_TAG=$(aws elbv2 describe-tags \
+      --resource-arns "$arn" \
+      --profile "$AWS_PROFILE" \
+      --region "$EKS_REGION" \
+      --query "TagDescriptions[0].Tags[?Key=='elbv2.k8s.aws/cluster'].Value | [0]" \
+      --output text 2>/tmp/error.log)
+    ret=$?
+
     if [ $ret -ne 0 ]; then
       logMessages /tmp/error.log
-      echo "ERROR: failed to delete load-balancer"
-      echo "       => aws elbv2 delete-load-balancer --load-balancer-arn "$LB_ARN" --region $AWS_REGION"
-      exit
+      echo "ERROR: Failed to retrieve load balancer tags"
+      return 1
     fi
-  
+
+    if [ "$CLUSTER_TAG" != "$EKS_CLUSTER_NAME" ]; then
+      continue
+    fi
+
+    FOUND=1
+
+    echo " ▪ Deleting EKS Load Balancer ($arn)"
+
+    aws elbv2 delete-load-balancer \
+      --load-balancer-arn "$arn" \
+      --profile "$AWS_PROFILE" \
+      --region "$EKS_REGION" > /tmp/error.log 2>&1
+    ret=$?
+
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to delete load balancer"
+      return 1
+    fi
+
     while aws elbv2 describe-load-balancers \
-      --load-balancer-arns "$LB_ARN" \
-      --region eu-north-1 >/dev/null 2>&1; do
+      --load-balancer-arns "$arn" \
+      --profile "$AWS_PROFILE" \
+      --region "$EKS_REGION" >/dev/null 2>&1; do
       sleep 10
     done
-  else 
-    echo " ▪ ALB Load Balancer allredy deleted"
+
+  done
+
+  if [ $FOUND -eq 0 ]; then
+    echo " ▪ No load balancers belonging to cluster $EKS_CLUSTER_NAME found"
   fi
 }
 
@@ -1577,41 +2308,71 @@ deleteELBv2LoadBalancer() {
 # Return Value .......:
 # ------------------------------------------------------------------------------------------
 deleteEKScluster() {
-  cluster=$(aws eks list-clusters --region $AWS_REGION 2>/dev/null | jq --arg key "$EKS_CLUSTER_NAME" -r '.clusters[] | select(. == $key)')
-  if [ "$cluster" == "$EKS_CLUSTER_NAME" ]; then
-    echo " ▪ deleting EKS Cluster ($EKS_CLUSTER_NAME)"
-  
-    eksctl delete cluster --name "$EKS_CLUSTER_NAME" --region $AWS_REGION --profile $AWS_PROFILE > /tmp/error.log 2>&1; ret=$?
-    if [ $ret -ne 0 ]; then
-      logMessages /tmp/error.log
-      echo "ERROR: failed to delete the EKS Cluster"
-      echo "       =>  eksctl delete cluster --name $EKS_CLUSTER_NAME --region $AWS_REGION --profile $AWS_PROFILE"
-      exit
+
+  echo " ▪ Checking EKS Cluster ($EKS_CLUSTER_NAME)"
+
+  aws eks describe-cluster \
+    --name "$EKS_CLUSTER_NAME" \
+    --region "$EKS_REGION" \
+    --profile "$AWS_PROFILE" > /tmp/error.log 2>&1
+
+  ret=$?
+
+  if [ $ret -ne 0 ]; then
+
+    if grep -q 'ResourceNotFoundException' /tmp/error.log; then
+      echo " ▪ EKS Cluster ($EKS_CLUSTER_NAME) already deleted"
+      return 0
     fi
-  
-    while aws eks describe-cluster --name "$EKS_CLUSTER_NAME" \
-      --region "$AWS_REGION" \
-      --query 'cluster.status' \
-      --output text >/dev/null 2>&1; do
-      sleep 20
-    done
 
-    # Wait until cluster is deleted
-    while true; do
-
-      aws eks describe-cluster \
-          --name "$EKS_CLUSTER_NAME" \
-          --region "$AWS_REGION" \
-          --profile "$AWS_PROFILE" >/dev/null 2>&1; ret=$?
-
-      [ $ret -ne 0 ] && break
-      sleep 30
-    done
-
-    echo " ▪ EKS Cluster ($EKS_CLUSTER_NAME) sucessfuly deleted"
-  else
-    echo " ▪ EKS Cluster ($EKS_CLUSTER_NAME) already deleted"
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to check EKS Cluster"
+    return 1
   fi
+
+  echo " ▪ Deleting EKS Cluster ($EKS_CLUSTER_NAME)"
+
+  eksctl delete cluster \
+    --name "$EKS_CLUSTER_NAME" \
+    --region "$EKS_REGION" \
+    --profile "$AWS_PROFILE" > /tmp/error.log 2>&1
+
+  ret=$?
+
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to delete EKS Cluster"
+    return 1
+  fi
+
+  echo " ▪ Waiting for EKS Cluster deletion..."
+
+  for i in {1..90}; do
+
+    aws eks describe-cluster \
+      --name "$EKS_CLUSTER_NAME" \
+      --region "$EKS_REGION" \
+      --profile "$AWS_PROFILE" > /tmp/error.log 2>&1
+
+    ret=$?
+
+    if [ $ret -ne 0 ]; then
+
+      if grep -q 'ResourceNotFoundException' /tmp/error.log; then
+        echo " ▪ EKS Cluster ($EKS_CLUSTER_NAME) successfully deleted"
+        return 0
+      fi
+
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to check EKS Cluster deletion"
+      return 1
+    fi
+
+    sleep 20
+  done
+
+  echo "ERROR: Timed out waiting for EKS Cluster deletion"
+  return 1
 }
 
 # ------------------------------------------------------------------------------------------
@@ -1691,26 +2452,49 @@ waitForClusterStackDeletion() {
 
   echo " ▪ Waiting for CloudFormation cluster stack ($CLUSTER_STACK)"
 
-  while true; do
+  for i in {1..90}; do
+
     STACK_STATUS=$(aws cloudformation describe-stacks \
       --stack-name "$CLUSTER_STACK" \
-      --region "$AWS_REGION" \
+      --region "$EKS_REGION" \
+      --profile "$AWS_PROFILE" \
       --query 'Stacks[0].StackStatus' \
-      --output text 2>/dev/null)
+      --output text 2>/tmp/error.log)
     ret=$?
 
     if [ $ret -ne 0 ]; then
-      echo " ▪ CloudFormation stack already deleted"
-      break
+
+      if grep -q 'does not exist' /tmp/error.log; then
+        echo " ▪ CloudFormation cluster stack successfully deleted"
+        return 0
+      fi
+
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to check CloudFormation cluster stack"
+      return 1
     fi
 
     echo " ▪ Stack Status ........: $STACK_STATUS"
 
-    [ "$STACK_STATUS" = "DELETE_COMPLETE" ] && break
-    [ "$STACK_STATUS" = "DELETE_FAILED" ] && break
+    case "$STACK_STATUS" in
+
+      DELETE_COMPLETE)
+        echo " ▪ CloudFormation cluster stack successfully deleted"
+        return 0
+        ;;
+
+      DELETE_FAILED)
+        echo "ERROR: CloudFormation cluster stack deletion failed"
+        return 1
+        ;;
+
+    esac
 
     sleep 20
   done
+
+  echo "ERROR: Timed out waiting for CloudFormation cluster stack deletion"
+  return 1
 }
 
 # ------------------------------------------------------------------------------------------
@@ -1781,7 +2565,7 @@ verifyOrLoginSSO() {
   local ret
 
   echo "Force AWS SSO login (profile: $PROFILE)"
-  aws sso login --profile "$PROFILE"
+  aws sso login --profile "$PROFILE" >/dev/null 2>&1
   ret=$?
 
   if [ $ret -ne 0 ]; then
@@ -2368,6 +3152,22 @@ verifyEksctlCredentials() {
 # Return Value .......: none
 # ------------------------------------------------------------------------------------------
 installFAIGchart() {
+  APP_NAMESPACE="fortiaigate"
+  APP_INGRESS="fortiaigate-ingress"
+  APP_URL="admin.$ROUTE53_DOMAIN"
+  
+  messageTitle "Deploy FAIG Core Ingress"
+  
+  CERT_ARN=$(getCertARN "*.$ROUTE53_DOMAIN")
+  ret=$?
+  if [ $ret -ne 0 -o -z "$CERT_ARN" ]; then
+    echo "ERROR: Failed to get Certificate ARN"
+    echo "       => getCertARN \"*.$ROUTE53_DOMAIN\""
+    return 1
+  fi
+
+  echo " ▪ CERT_ARN ............: $CERT_ARN"
+
   # Environment Variables
   AWS_ACCOUNT_ID=$(aws sts get-caller-identity | jq -r '.Account')
   ECR_FORTIAIGATE_REPOSITORY="${AWS_ACCOUNT_ID}.dkr.ecr.${ECR_REGION}.amazonaws.com/fortiaigate"
@@ -2397,19 +3197,19 @@ installFAIGchart() {
   # 12.7 Fix 7: License Validation Bug (build0004)
   # https://github.com/asameli-ftnt/fortiaigate-doc?tab=readme-ov-file#128-fix-8-triton-hardcoded-image-tags-build0012
   # ----------------------------------------------------------------------------------------
-  if [ -f $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml ]; then 
-    echo " ▪ Fixing License Validation Bug (build0004)"
-    if [ "$(uname)" == "Darwin" ]; then 
-      sed -i '' 's+triton-models:[0-9].*$+triton-models:{{ .Values.fortiaigate.image.tag }}+g' $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml
-      sed -i '' 's+custom-triton:[0-9].*$+custom-triton:{{ .Values.fortiaigate.image.tag }}+g' $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml
-    else
-      sed -i 's+triton-models:[0-9].*$+triton-models:{{ .Values.fortiaigate.image.tag }}+g' $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml
-      sed -i 's+custom-triton:[0-9].*$+custom-triton:{{ .Values.fortiaigate.image.tag }}+g' $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml
-    fi
-  else
-    echo "ERROR: File $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml does not exist"
-    exit 1
-  fi
+#  if [ -f $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml ]; then 
+#    echo " ▪ Fixing License Validation Bug (build0004)"
+#    if [ "$(uname)" == "Darwin" ]; then 
+#      sed -i '' 's+triton-models:[0-9].*$+triton-models:{{ .Values.fortiaigate.image.tag }}+g' $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml
+#      sed -i '' 's+custom-triton:[0-9].*$+custom-triton:{{ .Values.fortiaigate.image.tag }}+g' $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml
+#    else
+#      sed -i 's+triton-models:[0-9].*$+triton-models:{{ .Values.fortiaigate.image.tag }}+g' $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml
+#      sed -i 's+custom-triton:[0-9].*$+custom-triton:{{ .Values.fortiaigate.image.tag }}+g' $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml
+#    fi
+#  else
+#    echo "ERROR: File $ECR_STAGEDIR/fortiaigate/templates/triton-server.yaml does not exist"
+#    exit 1
+#  fi
 
   # ----------------------------------------------------------------------------------------
   # 12.2 Fix 2: Triton GPU Node Affinity
@@ -2462,6 +3262,8 @@ installFAIGchart() {
   sed -e "s+XXX_REPONAME_XXX+$ECR_FORTIAIGATE_REPOSITORY+g" \
       -e "s/XXXEFSSCXXX/$EFS_STORAGE_CLASS/g" \
       -e "s/XXX_REPOTAG_XXX/$ECR_FORTIAIGATE_TAG/g" \
+      -e "s|XXXDOMAINXXX|$ROUTE53_DOMAIN|g" \
+      -e "s|XXX_ARN_XXX|$CERT_ARN|g" \
       -e '/^XXXLICENSESXXX$/{r /tmp/values-licenses.yaml' -e ';d;}' cfg/values-template.yaml > /tmp/values.yaml
 
   echo " ▪ FortiAIgate Helm Chart Values Files (/tmp/Values.yaml) for rewiew"
@@ -2470,19 +3272,40 @@ installFAIGchart() {
   #echo "   ---------------------------------------------------------------------------------------------------------------------"
 
   stt=$(helm list -n fortiaigate -o json | jq -r --arg key "fortiaigate" '.[] | select(.name == $key).status')
-  if [ "$stt" != "deployed" ]; then 
-    echo " ▪ Install Helm Chart (fortiaigate)" 
-    helm upgrade --install fortiaigate ${ECR_STAGEDIR}/fortiaigate -n fortiaigate -f /tmp/values.yaml \
-                 --create-namespace --wait --wait-for-jobs --timeout 1h >  /tmp/error.log 2>&1; ret=$?
-    if [ $ret -ne 0 ]; then
-      logMessages /tmp/error.log
-      echo "ERROR: Failed to install Helm chart fortiaigate"
-      exit 1
-    fi
-  else
-   ver=$(helm list -n fortiaigate -o json | jq -r --arg key "fortiaigate" '.[] | select(.name == $key).app_version')
-    echo " ▪ Helm Chart (fortiaigate) already successfuly deployed ($ver)"
+  echo " ▪ Install / reconcile Helm Chart (fortiaigate)" 
+  helm upgrade --install fortiaigate ${ECR_STAGEDIR}/fortiaigate -n fortiaigate -f /tmp/values.yaml \
+               --set fortiaigate.image.tag=$ECR_FORTIAIGATE_TAG \
+               --set vllm.image.tag=$ECR_FORTIAIGATE_TAG \
+               --set models.image.tag=$ECR_FORTIAIGATE_TAG \
+               --set gpuProbe.image.tag=$ECR_FORTIAIGATE_TAG \
+               --create-namespace --wait --wait-for-jobs --timeout 1h >  /tmp/error.log 2>&1; ret=$?
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to install Helm chart fortiaigate"
+    exit 1
   fi
+
+  # Reconcile HTTPS and hostname even when the Helm release already exists.
+  # Keep the chart's backend services and paths intact.
+  local admin_ingress admin_patch
+  admin_ingress=$(kubectl -n fortiaigate get ingress fortiaigate-ingress -o json) || return 1
+  admin_patch=$(printf '%s\n' "$admin_ingress" | jq -e \
+    --arg host "admin.$ROUTE53_DOMAIN" --arg cert "$CERT_ARN" '
+      if (.spec.rules | length) > 0 then
+        {
+          metadata: {annotations: {
+            "alb.ingress.kubernetes.io/certificate-arn": $cert,
+            "alb.ingress.kubernetes.io/listen-ports": "[{\"HTTP\":80},{\"HTTPS\":443}]",
+            "alb.ingress.kubernetes.io/ssl-redirect": "443"
+          }},
+          spec: {rules: (.spec.rules | map(.host = $host))}
+        }
+      else error("FortiAIgate ingress has no routing rules") end
+    ') || return 1
+  kubectl -n fortiaigate patch ingress fortiaigate-ingress \
+    --type merge -p "$admin_patch" || return 1
+
+  updateAppDNS "fortiaigate" "fortiaigate" "admin.$ROUTE53_DOMAIN" "$ROUTE53_HOSTED_ZONE_ID" || return 1
 }
 
 # ------------------------------------------------------------------------------------------
@@ -2570,10 +3393,54 @@ getImageTags() {
 # ------------------------------------------------------------------------------------------
 installNVIDIAdevicePlugin() {
   echo " ▪ Install NVIDIA Device Plugin"
-  kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.17.0/deployments/static/nvidia-device-plugin.yml > /dev/null 2>&1; ret=$?
+
+  kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.17.0/deployments/static/nvidia-device-plugin.yml \
+    > /tmp/error.log 2>&1
+  ret=$?
+
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: NVIDIA Device Plugin installation failed"
+    return 1
+  fi
+
+  echo " ▪ Waiting for NVIDIA Device Plugin..."
+  kubectl -n kube-system rollout status daemonset/nvidia-device-plugin-daemonset --timeout=5m \
+    > /tmp/error.log 2>&1
+  ret=$?
+
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: NVIDIA Device Plugin did not become ready"
+    return 1
+  fi
+
+  echo " ▪ Waiting for NVIDIA GPU registration..."
+
+  GPU_COUNT=""
+
+  for i in {1..30}; do
+    GPU_COUNT=$(kubectl --request-timeout=10s get nodes \
+      -l eks.amazonaws.com/nodegroup=gpu-ondemand-ng \
+      -o jsonpath='{.items[0].status.allocatable.nvidia\.com/gpu}')
+
+    if [ "$GPU_COUNT" = "1" ]; then
+      echo " ▪ NVIDIA GPU successfully registered"
+      break
+    fi
+
+    sleep 5
+  done
+
+  if [ "$GPU_COUNT" != "1" ]; then
+    echo "ERROR: NVIDIA GPU registration timed out"
+    return 1
+  fi
 
   echo "   ---------------------------------------------------------------------------------------------------------------------"
-  kubectl get nodes -o custom-columns=NAME:.metadata.name,GPU:.status.allocatable.'nvidia\.com/gpu' | sed 's/^/   /g'
+  kubectl get nodes \
+    -o custom-columns=NAME:.metadata.name,INSTANCE:.metadata.labels.node\\.kubernetes\\.io/instance-type,GPU:.status.allocatable.'nvidia\.com/gpu' \
+    | sed 's/^/   /g'
   echo "   ---------------------------------------------------------------------------------------------------------------------"
 }
 
@@ -2601,7 +3468,7 @@ installStorageClassGP3() {
 # Function Name ......: prepareEFSinfrastructure
 # Function Purpose ...: Create / reuse EFS filesystem, security group and mount targets
 # ------------------------------------------------------------------------------------------
-# Dependencies .......: AWS_REGION, EKS_CLUSTER_NAME, AWS_PROFILE
+# Dependencies .......: EKS_REGION, EKS_CLUSTER_NAME, AWS_PROFILE
 # Optional Vars ......: EFS_NAME, EFS_SG_NAME
 # Outputs ............: EFS_FILE_SYSTEM_ID, EFS_SECURITY_GROUP_ID
 # ------------------------------------------------------------------------------------------
@@ -2610,59 +3477,79 @@ prepareEFSinfrastructure() {
   local EFS_NAME="${EFS_NAME:-efs-$EKS_CLUSTER_NAME}"
   local EFS_SG_NAME="${EFS_SG_NAME:-efs-$EKS_CLUSTER_NAME-sg}"
   local VPC_ID=""
+  local VPC_CIDR=""
   local SUBNET_IDS=""
   local subnet=""
   local subnetAzId=""
   local MT_ID=""
+  local NFS_RULE=""
   local ret=0
 
   messageTitle "Prepare Amazon EFS Infrastructure"
 
-  [ -z "$AWS_REGION" ]       && { echo "ERROR: AWS_REGION is not set"; exit 1; }
-  [ -z "$EKS_CLUSTER_NAME" ] && { echo "ERROR: EKS_CLUSTER_NAME is not set"; exit 1; }
+  [ -z "$EKS_REGION" ]       && { echo "ERROR: EKS_REGION is not set"; return 1; }
+  [ -z "$EKS_CLUSTER_NAME" ] && { echo "ERROR: EKS_CLUSTER_NAME is not set"; return 1; }
+  [ -z "$AWS_PROFILE" ]      && { echo "ERROR: AWS_PROFILE is not set"; return 1; }
 
   # ------------------------------------------------------------------------
   # Get cluster VPC + subnets
   # ------------------------------------------------------------------------
   VPC_ID=$(aws eks describe-cluster \
     --name "$EKS_CLUSTER_NAME" \
-    --region "$AWS_REGION" \
+    --region "$EKS_REGION" \
+    --profile "$AWS_PROFILE" \
     --query 'cluster.resourcesVpcConfig.vpcId' \
     --output text 2>/tmp/error.log); ret=$?
 
   if [ $ret -ne 0 ] || [ -z "$VPC_ID" ] || [ "$VPC_ID" = "None" ]; then
     logMessages /tmp/error.log
     echo "ERROR: Failed to get VPC ID for cluster $EKS_CLUSTER_NAME"
-    exit 1
+    return 1
   fi
 
   SUBNET_IDS=$(aws eks describe-cluster \
     --name "$EKS_CLUSTER_NAME" \
-    --region "$AWS_REGION" \
+    --region "$EKS_REGION" \
+    --profile "$AWS_PROFILE" \
     --query 'cluster.resourcesVpcConfig.subnetIds' \
     --output text 2>/tmp/error.log); ret=$?
 
-  if [ $ret -ne 0 ] || [ -z "$SUBNET_IDS" ]; then
+  if [ $ret -ne 0 ] || [ -z "$SUBNET_IDS" ] || [ "$SUBNET_IDS" = "None" ]; then
     logMessages /tmp/error.log
     echo "ERROR: Failed to get subnet IDs for cluster $EKS_CLUSTER_NAME"
-    exit 1
+    return 1
+  fi
+
+  VPC_CIDR=$(aws ec2 describe-vpcs \
+    --vpc-ids "$VPC_ID" \
+    --region "$EKS_REGION" \
+    --profile "$AWS_PROFILE" \
+    --query 'Vpcs[0].CidrBlock' \
+    --output text 2>/tmp/error.log); ret=$?
+
+  if [ $ret -ne 0 ] || [ -z "$VPC_CIDR" ] || [ "$VPC_CIDR" = "None" ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to get VPC CIDR"
+    return 1
   fi
 
   echo " ▪ VPC_ID ...............: $VPC_ID"
+  echo " ▪ VPC_CIDR .............: $VPC_CIDR"
   echo " ▪ SUBNET_IDS ...........: $SUBNET_IDS"
 
   # ------------------------------------------------------------------------
   # Create / reuse EFS filesystem
   # ------------------------------------------------------------------------
   EFS_FILE_SYSTEM_ID=$(aws efs describe-file-systems \
-    --region "$AWS_REGION" \
+    --region "$EKS_REGION" \
+    --profile "$AWS_PROFILE" \
     --query "FileSystems[?Name=='$EFS_NAME'].FileSystemId | [0]" \
     --output text 2>/tmp/error.log); ret=$?
 
   if [ $ret -ne 0 ]; then
     logMessages /tmp/error.log
     echo "ERROR: Failed to query EFS file systems"
-    exit 1
+    return 1
   fi
 
   if [ -z "$EFS_FILE_SYSTEM_ID" ] || [ "$EFS_FILE_SYSTEM_ID" = "None" ]; then
@@ -2673,17 +3560,60 @@ prepareEFSinfrastructure() {
       --performance-mode generalPurpose \
       --encrypted \
       --tags Key=Name,Value="$EFS_NAME" \
-      --region "$AWS_REGION" \
+      --region "$EKS_REGION" \
+      --profile "$AWS_PROFILE" \
       --query 'FileSystemId' \
       --output text 2>/tmp/error.log); ret=$?
 
     if [ $ret -ne 0 ] || [ -z "$EFS_FILE_SYSTEM_ID" ] || [ "$EFS_FILE_SYSTEM_ID" = "None" ]; then
       logMessages /tmp/error.log
       echo "ERROR: Failed to create EFS filesystem"
-      exit 1
+      return 1
     fi
   else
     echo " ▪ EFS filesystem exists : $EFS_FILE_SYSTEM_ID"
+  fi
+
+  # ------------------------------------------------------------------------
+  # Wait until EFS filesystem is available
+  # ------------------------------------------------------------------------
+  echo " ▪ Waiting for EFS filesystem availability"
+
+  local EFS_STATE=""
+  local attempt=0
+
+  while [ $attempt -lt 30 ]; do
+
+    EFS_STATE=$(aws efs describe-file-systems \
+      --file-system-id "$EFS_FILE_SYSTEM_ID" \
+      --region "$EKS_REGION" \
+      --profile "$AWS_PROFILE" \
+      --query 'FileSystems[0].LifeCycleState' \
+      --output text 2>/tmp/error.log); ret=$?
+
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to query EFS filesystem status"
+      return 1
+    fi
+
+    if [ "$EFS_STATE" = "available" ]; then
+      echo " ▪ EFS filesystem ready .: $EFS_FILE_SYSTEM_ID"
+      break
+    fi
+
+    if [ "$EFS_STATE" != "creating" ]; then
+      echo "ERROR: Unexpected EFS filesystem state: $EFS_STATE"
+      return 1
+    fi
+
+    attempt=$((attempt + 1))
+    sleep 10
+  done
+
+  if [ "$EFS_STATE" != "available" ]; then
+    echo "ERROR: Timeout waiting for EFS filesystem"
+    return 1
   fi
 
   # ------------------------------------------------------------------------
@@ -2691,9 +3621,16 @@ prepareEFSinfrastructure() {
   # ------------------------------------------------------------------------
   EFS_SECURITY_GROUP_ID=$(aws ec2 describe-security-groups \
     --filters Name=vpc-id,Values="$VPC_ID" Name=group-name,Values="$EFS_SG_NAME" \
-    --region "$AWS_REGION" \
+    --region "$EKS_REGION" \
+    --profile "$AWS_PROFILE" \
     --query 'SecurityGroups[0].GroupId' \
     --output text 2>/tmp/error.log); ret=$?
+
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to query EFS security groups"
+    return 1
+  fi
 
   if [ -z "$EFS_SECURITY_GROUP_ID" ] || [ "$EFS_SECURITY_GROUP_ID" = "None" ]; then
     echo " ▪ Create EFS SG ........: $EFS_SG_NAME"
@@ -2702,58 +3639,84 @@ prepareEFSinfrastructure() {
       --group-name "$EFS_SG_NAME" \
       --description "EFS Security Group for $EKS_CLUSTER_NAME" \
       --vpc-id "$VPC_ID" \
-      --region "$AWS_REGION" \
+      --region "$EKS_REGION" \
+      --profile "$AWS_PROFILE" \
       --query 'GroupId' \
       --output text 2>/tmp/error.log); ret=$?
 
     if [ $ret -ne 0 ] || [ -z "$EFS_SECURITY_GROUP_ID" ] || [ "$EFS_SECURITY_GROUP_ID" = "None" ]; then
       logMessages /tmp/error.log
       echo "ERROR: Failed to create EFS security group"
-      exit 1
-    fi
-
-    aws ec2 authorize-security-group-ingress \
-      --group-id "$EFS_SECURITY_GROUP_ID" \
-      --protocol tcp \
-      --port 2049 \
-      --cidr 0.0.0.0/0 \
-      --region "$AWS_REGION" > /tmp/error.log 2>&1; ret=$?
-
-    if [ $ret -ne 0 ]; then
-      logMessages /tmp/error.log
-      echo "ERROR: Failed to authorize EFS security group ingress"
-      exit 1
+      return 1
     fi
   else
     echo " ▪ EFS SG exists ........: $EFS_SECURITY_GROUP_ID"
   fi
 
   # ------------------------------------------------------------------------
+  # Ensure NFS ingress rule exists (TCP 2049 from VPC CIDR)
+  # ------------------------------------------------------------------------
+  NFS_RULE=$(aws ec2 describe-security-groups \
+    --group-ids "$EFS_SECURITY_GROUP_ID" \
+    --region "$EKS_REGION" \
+    --profile "$AWS_PROFILE" \
+    --query "SecurityGroups[0].IpPermissions[?IpProtocol=='tcp' && FromPort==\`2049\` && ToPort==\`2049\`].IpRanges[].CidrIp" \
+    --output text 2>/tmp/error.log); ret=$?
+
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to query EFS NFS ingress rules"
+    return 1
+  fi
+
+  if ! printf '%s\n' "$NFS_RULE" | tr '\t' '\n' | grep -Fxq "$VPC_CIDR"; then
+    echo " ▪ Authorize NFS access .: TCP 2049 ($VPC_CIDR)"
+
+    aws ec2 authorize-security-group-ingress \
+      --group-id "$EFS_SECURITY_GROUP_ID" \
+      --protocol tcp \
+      --port 2049 \
+      --cidr "$VPC_CIDR" \
+      --region "$EKS_REGION" \
+      --profile "$AWS_PROFILE" \
+      > /tmp/error.log 2>&1; ret=$?
+
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Failed to authorize EFS security group ingress"
+      return 1
+    fi
+  fi
+
+  # ------------------------------------------------------------------------
   # Create mount target per AZ
   # ------------------------------------------------------------------------
   for subnet in $SUBNET_IDS; do
+
     subnetAzId=$(aws ec2 describe-subnets \
       --subnet-ids "$subnet" \
-      --region "$AWS_REGION" \
+      --region "$EKS_REGION" \
+      --profile "$AWS_PROFILE" \
       --query 'Subnets[0].AvailabilityZoneId' \
       --output text 2>/tmp/error.log); ret=$?
 
-    if [ $ret -ne 0 ] || [ -z "$subnetAzId" ]; then
+    if [ $ret -ne 0 ] || [ -z "$subnetAzId" ] || [ "$subnetAzId" = "None" ]; then
       logMessages /tmp/error.log
       echo "ERROR: Failed to get AZ ID for subnet $subnet"
-      exit 1
+      return 1
     fi
 
     MT_ID=$(aws efs describe-mount-targets \
       --file-system-id "$EFS_FILE_SYSTEM_ID" \
-      --region "$AWS_REGION" \
+      --region "$EKS_REGION" \
+      --profile "$AWS_PROFILE" \
       --query "MountTargets[?AvailabilityZoneId=='$subnetAzId'].MountTargetId | [0]" \
       --output text 2>/tmp/error.log); ret=$?
 
     if [ $ret -ne 0 ]; then
       logMessages /tmp/error.log
       echo "ERROR: Failed to query mount targets"
-      exit 1
+      return 1
     fi
 
     if [ -z "$MT_ID" ] || [ "$MT_ID" = "None" ]; then
@@ -2763,18 +3726,23 @@ prepareEFSinfrastructure() {
         --file-system-id "$EFS_FILE_SYSTEM_ID" \
         --subnet-id "$subnet" \
         --security-groups "$EFS_SECURITY_GROUP_ID" \
-        --region "$AWS_REGION" > /tmp/error.log 2>&1; ret=$?
+        --region "$EKS_REGION" \
+        --profile "$AWS_PROFILE" \
+        > /tmp/error.log 2>&1; ret=$?
 
       if [ $ret -ne 0 ]; then
         logMessages /tmp/error.log
         echo "ERROR: Failed to create mount target for subnet $subnet"
-        exit 1
+        return 1
       fi
     else
       echo " ▪ Mount target exists ..: $subnet ($subnetAzId)"
     fi
   done
 
+  # ------------------------------------------------------------------------
+  # Save deployment state
+  # ------------------------------------------------------------------------
   {
     grep -v '^export EFS_FILE_SYSTEM_ID=' "$HOME/.faig/deploy.stat" 2>/dev/null | \
     grep -v '^export EFS_SECURITY_GROUP_ID='
@@ -2784,6 +3752,8 @@ prepareEFSinfrastructure() {
 
   echo " ▪ EFS_FILE_SYSTEM_ID ...: $EFS_FILE_SYSTEM_ID"
   echo " ▪ EFS_SECURITY_GROUP_ID : $EFS_SECURITY_GROUP_ID"
+
+  return 0
 }
 
 # ------------------------------------------------------------------------------------------
@@ -2806,7 +3776,8 @@ installEBSCSIDriver() {
   ADDON_STATUS=$(aws eks describe-addon \
     --cluster-name "$EKS_CLUSTER_NAME" \
     --addon-name "$EBS_ADDON_NAME" \
-    --region "$AWS_REGION" \
+    --region "$EKS_REGION" \
+    --profile "$AWS_PROFILE" \
     --query 'addon.status' \
     --output text 2>/tmp/error.log)
   RET=$?
@@ -2820,20 +3791,21 @@ installEBSCSIDriver() {
       eksctl create addon \
         --name "$EBS_ADDON_NAME" \
         --cluster "$EKS_CLUSTER_NAME" \
-        --region "$AWS_REGION" \
+        --profile "$AWS_PROFILE" \
+        --region "$EKS_REGION" \
         --force >/tmp/error.log 2>&1
       RET=$?
 
       if [ $RET -ne 0 ]; then
         logMessages /tmp/error.log
         echo "ERROR: Installing EBS CSI addon failed"
-        echo "       => eksctl create addon --name $EBS_ADDON_NAME --cluster $EKS_CLUSTER_NAME --region $AWS_REGION --force"
+        echo "       => eksctl create addon --name $EBS_ADDON_NAME --cluster $EKS_CLUSTER_NAME --region $EKS_REGION --force"
         exit 1
       fi
     else
       logMessages /tmp/error.log
       echo "ERROR: Failed to check whether EBS CSI addon exists"
-      echo "       => aws eks describe-addon --cluster-name $EKS_CLUSTER_NAME --addon-name $EBS_ADDON_NAME --region $AWS_REGION"
+      echo "       => aws eks describe-addon --cluster-name $EKS_CLUSTER_NAME --addon-name $EBS_ADDON_NAME --region $EKS_REGION"
       exit 1
     fi
   fi
@@ -2846,7 +3818,8 @@ installEBSCSIDriver() {
     ADDON_STATUS=$(aws eks describe-addon \
       --cluster-name "$EKS_CLUSTER_NAME" \
       --addon-name "$EBS_ADDON_NAME" \
-      --region "$AWS_REGION" \
+       --profile "$AWS_PROFILE" \
+      --region "$EKS_REGION" \
       --query 'addon.status' \
       --output text 2>/tmp/error.log)
     RET=$?
@@ -2893,10 +3866,11 @@ installEBSCSIDriver() {
 # Function Name ......: installEFSCSIDriver
 # Function Purpose ...: Install / upgrade AWS EFS CSI driver with IAM service account
 # ------------------------------------------------------------------------------------------
-# Dependencies .......: AWS_REGION, EKS_CLUSTER_NAME, AWS_PROFILE
+# Dependencies .......: EKS_REGION, EKS_CLUSTER_NAME, AWS_PROFILE
 # Optional Vars ......: EFS_CSI_NAMESPACE, EFS_CSI_SA_NAME, EFS_CSI_RELEASE
 # ------------------------------------------------------------------------------------------
 installEFSCSIDriver() {
+
   local EFS_CSI_DEPLOYMENT="${EFS_CSI_DEPLOYMENT:-efs-csi-controller}"
   local EFS_CSI_NAMESPACE="${EFS_CSI_NAMESPACE:-kube-system}"
   local EFS_CSI_SA_NAME="${EFS_CSI_SA_NAME:-efs-csi-controller-sa}"
@@ -2907,14 +3881,20 @@ installEFSCSIDriver() {
 
   messageTitle "Install Amazon EFS CSI Driver"
 
-  [ -z "$AWS_REGION" ]       && { echo "ERROR: AWS_REGION is not set"; exit 1; }
-  [ -z "$EKS_CLUSTER_NAME" ] && { echo "ERROR: EKS_CLUSTER_NAME is not set"; exit 1; }
-  [ -z "$AWS_PROFILE" ]      && { echo "ERROR: AWS_PROFILE is not set"; exit 1; }
+  [ -z "$EKS_REGION" ]       && { echo "ERROR: EKS_REGION is not set"; return 1; }
+  [ -z "$EKS_CLUSTER_NAME" ] && { echo "ERROR: EKS_CLUSTER_NAME is not set"; return 1; }
+  [ -z "$AWS_PROFILE" ]      && { echo "ERROR: AWS_PROFILE is not set"; return 1; }
 
-  ROLE_ARN=$(kubectl get sa "$EFS_CSI_SA_NAME" -n "$EFS_CSI_NAMESPACE" \
-    -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}' 2>/dev/null)
+  # ------------------------------------------------------------------------
+  # Create / reuse IAM service account
+  # ------------------------------------------------------------------------
+  ROLE_ARN=$(kubectl get sa "$EFS_CSI_SA_NAME" \
+    -n "$EFS_CSI_NAMESPACE" \
+    -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}' \
+    2>/dev/null)
 
   if [ -z "$ROLE_ARN" ]; then
+
     echo " ▪ Create / update IAM SA : $EFS_CSI_SA_NAME"
 
     eksctl create iamserviceaccount \
@@ -2923,63 +3903,85 @@ installEFSCSIDriver() {
       --name "$EFS_CSI_SA_NAME" \
       --attach-policy-arn "$EFS_POLICY_ARN" \
       --approve \
-      --region "$AWS_REGION" \
+      --region "$EKS_REGION" \
       --profile "$AWS_PROFILE" \
-      --override-existing-serviceaccounts > /tmp/error.log 2>&1; ret=$?
+      --override-existing-serviceaccounts > /tmp/error.log 2>&1
+    ret=$?
 
     if [ $ret -ne 0 ]; then
       logMessages /tmp/error.log
       echo "ERROR: Failed to create/update IAM service account for EFS CSI driver"
-      exit 1
+      return 1
     fi
 
-    ROLE_ARN=$(kubectl get sa "$EFS_CSI_SA_NAME" -n "$EFS_CSI_NAMESPACE" \
-      -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}' 2>/dev/null)
+    ROLE_ARN=$(kubectl get sa "$EFS_CSI_SA_NAME" \
+      -n "$EFS_CSI_NAMESPACE" \
+      -o jsonpath='{.metadata.annotations.eks\.amazonaws\.com/role-arn}' \
+      2>/dev/null)
 
     if [ -z "$ROLE_ARN" ]; then
       echo "ERROR: EFS CSI service account has no role annotation"
-      exit 1
+      return 1
     fi
+
   else
     echo " ▪ IAM SA exists ........: $EFS_CSI_SA_NAME"
   fi
 
   echo " ▪ EFS CSI role ARN .....: $ROLE_ARN"
 
-  helm repo add aws-efs-csi-driver https://kubernetes-sigs.github.io/aws-efs-csi-driver/ \
-    >/tmp/error.log 2>&1 || true
-  helm repo update >/tmp/error.log 2>&1; ret=$?
+  # ------------------------------------------------------------------------
+  # Install / upgrade EFS CSI driver
+  # ------------------------------------------------------------------------
+  helm repo add aws-efs-csi-driver \
+    https://kubernetes-sigs.github.io/aws-efs-csi-driver/ \
+    > /tmp/error.log 2>&1 || true
+
+  helm repo update > /tmp/error.log 2>&1
+  ret=$?
 
   if [ $ret -ne 0 ]; then
     logMessages /tmp/error.log
     echo "ERROR: Failed to update Helm repositories"
-    exit 1
+    return 1
   fi
 
   echo " ▪ Install / upgrade ....: $EFS_CSI_RELEASE"
-  helm upgrade --install "$EFS_CSI_RELEASE" aws-efs-csi-driver/aws-efs-csi-driver \
-    -n "$EFS_CSI_NAMESPACE" \
+
+  helm upgrade --install "$EFS_CSI_RELEASE" \
+    aws-efs-csi-driver/aws-efs-csi-driver \
+    --namespace "$EFS_CSI_NAMESPACE" \
     --set controller.serviceAccount.create=false \
-    --set controller.serviceAccount.name="$EFS_CSI_SA_NAME" > /tmp/error.log 2>&1; ret=$?
+    --set controller.serviceAccount.name="$EFS_CSI_SA_NAME" \
+    > /tmp/error.log 2>&1
+  ret=$?
 
   if [ $ret -ne 0 ]; then
     logMessages /tmp/error.log
     echo "ERROR: Failed to install/upgrade EFS CSI driver"
-    exit 1
+    return 1
   fi
 
-  kubectl rollout status deployment/efs-csi-controller \
-    -n "$EFS_CSI_NAMESPACE" --timeout=180s > /tmp/error.log 2>&1; ret=$?
+  # ------------------------------------------------------------------------
+  # Wait for EFS CSI controller
+  # ------------------------------------------------------------------------
+  echo " ▪ Waiting for EFS CSI controller..."
+
+  kubectl rollout status "deployment/$EFS_CSI_DEPLOYMENT" \
+    -n "$EFS_CSI_NAMESPACE" \
+    --timeout=180s > /tmp/error.log 2>&1
+  ret=$?
 
   if [ $ret -ne 0 ]; then
     logMessages /tmp/error.log
     echo "ERROR: EFS CSI driver rollout failed"
-    exit 1
+    return 1
   fi
 
   echo " ▪ EFS CSI driver ready"
-}
 
+  return 0
+}
 
 # ------------------------------------------------------------------------------------------
 # Function Name ......: installEFSstorageClass
@@ -3053,6 +4055,48 @@ EOF
 }
 
 # ------------------------------------------------------------------------------------------
+# Function Name ......: installMCPFileServer
+# Function Purpose ...: Install the MCP File Server
+# ------------------------------------------------------------------------------------------
+# Dependencies .......: 
+# Optional Vars ......: 
+# ------------------------------------------------------------------------------------------
+installMCPFileServer() {
+  APP_NAMESPACE="filesystem-mcp-server"
+    
+  messageTitle "Deploy MCP File Server"
+
+  NAMESPACE="filesystem-mcp-server"
+  MANIFEST="filesystem-mcp-server/filesystem-mcp-server.yaml"
+
+  kubectl get namespace "$APP_NAMESPACE" >/dev/null 2>&1; ret=$?
+  if [ $ret -ne 0 ]; then
+    echo " ▪ Create Namespace ....: $APP_NAMESPACE"
+    kubectl create namespace "$APP_NAMESPACE" > /tmp/error.log 2>&1; ret=$?
+    if [ $ret -ne 0 ]; then
+      logMessages /tmp/error.log
+      echo "ERROR: Creating namespace failed"
+      echo "       => kubectl create namespace $APP_NAMESPACE"
+      exit 1
+    fi
+  else
+    echo " ▪ Namespace already exists"
+  fi
+
+  # Apply on every run to create missing ingress or reconcile its configuration.
+  echo " ▪ Deploying filesystem MCP .......: $MANIFEST"
+  kubectl -n $APP_NAMESPACE apply -f $MANIFEST > /tmp/error.log 2>&1; ret=$?
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Deploying MCP Fileserver failed"
+    echo "       => kubectl -n $APP_NAMESPACE apply -f $MANIFEST"
+    return 1
+  fi
+
+  kubectl rollout status deployment/filesystem-mcp -n "$NAMESPACE" --timeout=120s > /dev/null 2>&1
+}
+
+# ------------------------------------------------------------------------------------------
 # Function Name ......: installOpenWebUI
 # Function Purpose ...: Install OpenWebUI
 # ------------------------------------------------------------------------------------------
@@ -3074,11 +4118,13 @@ installOpenWebUI() {
     echo "       => getCertARN \"*.$ROUTE53_DOMAIN\""
     return 1
   fi
+
     
   echo " ▪ CERT_ARN ............: $CERT_ARN"      
     
   sed -e "s|XXX_ARN_XXX|$CERT_ARN|g" -e "s|XXXDOMAINXXX|$ROUTE53_DOMAIN|g" files/webui-ingress-template.yaml > /tmp/webui-ingress.yaml
 
+#gaga1
   nam=$(helm repo list -o json | jq -r --arg key "open-webui" '.[] | select(.name == $key).name')
   if [ "$nam" != "open-webui" ]; then 
     echo " ▪ Add Helm Repo https://aws.github.io/eks-charts"
@@ -3088,47 +4134,47 @@ installOpenWebUI() {
   fi
 
   stt=$(helm list -n open-webui -o json | jq -r --arg key "open-webui" '.[] | select(.name == $key).status')
-  if [ "$stt" != "deployed" ]; then
-    echo " ▪ Install / upgrade ....: open-webui"
-    helm upgrade --install  open-webui open-webui/open-webui \
-      -n open-webui --create-namespace \
-      --set ollama.enabled=false \
-      --set service.type=ClusterIP --create-namespace --wait >  /tmp/error.log 2>&1; ret=$?
-  
-    if [ $ret -ne 0 ]; then
-      logMessages /tmp/error.log
-      echo "ERROR: Failed to install Helm chart open-webui"
-      exit 1
-    fi
-  else
-    ver=$(helm list -n open-webui -o json | jq -r --arg key "open-webui" '.[] | select(.name == $key).app_version')
-    echo " ▪ Helm Chart (open-webui) already successfuly deployed ($ver)"
+  local webui_chart_version=()
+  if [ "$stt" = "deployed" ]; then
+    local installed_chart
+    installed_chart=$(helm list -n open-webui -o json | jq -er '.[] | select(.name == "open-webui") | .chart') || return 1
+    webui_chart_version=(--version "${installed_chart#open-webui-}")
+  fi
+  echo " ▪ Install / reconcile ..: open-webui"
+  helm upgrade --install  open-webui open-webui/open-webui "${webui_chart_version[@]}" \
+    -n open-webui --create-namespace \
+    --set ollama.enabled=false \
+    --set service.type=ClusterIP --create-namespace --wait >  /tmp/error.log 2>&1; ret=$?
+
+  if [ $ret -ne 0 ]; then
+    logMessages /tmp/error.log
+    echo "ERROR: Failed to install Helm chart open-webui"
+    exit 1
   fi 
 
-  # Deploy Ingress only if not already installed
-  kubectl -n "$APP_NAMESPACE" get ingress "$APP_INGRESS" >/dev/null 2>&1; ret=$?
+  # Apply on every run to create missing ingress or reconcile its configuration.
+  echo " ▪ Apply Ingress .......: $APP_INGRESS"
+  kubectl -n $APP_NAMESPACE apply -f /tmp/webui-ingress.yaml > /tmp/error.log 2>&1; ret=$?
   if [ $ret -ne 0 ]; then
-    echo " ▪ Install Ingress .....: $APP_INGRESS"
-    kubectl -n $APP_NAMESPACE apply -f /tmp/webui-ingress.yaml > /tmp/error.log 2>&1; ret=$?
-    if [ $ret -ne 0 ]; then
-      logMessages /tmp/error.log
-      echo "ERROR: Installing demo app ingress failed"
-      echo "       => kubectl -n $APP_NAMESPACE apply -f /tmp/webui-ingress.yaml"
-      return 1
-    fi
-  else
-    echo " ▪ WebUI Ingress already installed"
+    logMessages /tmp/error.log
+    echo "ERROR: Installing demo app ingress failed"
+    echo "       => kubectl -n $APP_NAMESPACE apply -f /tmp/webui-ingress.yaml"
+    return 1
   fi
 
-  updateAppDNS "open-webui" "webui" "webui.$ROUTE53_DOMAIN" "$ROUTE53_HOSTED_ZONE_ID"
+  updateAppDNS "open-webui" "webui" "webui.$ROUTE53_DOMAIN" "$ROUTE53_HOSTED_ZONE_ID" || return 1
 
   webui=$(kubectl -n open-webui get ingress webui-ingress -o json | jq -r '.spec.rules[].host') 
-  mgmui=$(kubectl -n fortiaigate get ingress fortiaigate-ingress -o json | jq -r '.status.loadBalancer.ingress[].hostname')
+  mgmui="admin.$ROUTE53_DOMAIN"
 
   echo ""
   echo "-------------------------------------------------------------------------------------------------------------------------------------------------------"
   echo "FortiAIgate Installation Successfully Completed, Access the OpenWeb UI by the following URL:"
-  echo "=> Management Interface...: http://$mgmui"
+  if [ "$ECR_FORTIAIGATE_TAG" == "build0024" ]; then 
+    echo "=> Management Interface...: https://$mgmui"
+  else
+    echo "=> Management Interface...: https://$mgmui/ui"
+  fi
   echo "=> User Web UI ...........: https://$webui"
   echo "-------------------------------------------------------------------------------------------------------------------------------------------------------"
 }
@@ -3136,8 +4182,8 @@ installOpenWebUI() {
 deleteClassicLoadBalancersInVpc() {
   vpcId="$1"
 
-  aws elb describe-load-balancers \
-    --region $AWS_REGION > /tmp/elbs.json 2>/dev/null
+  aws elb describe-load-balancers --profile "$AWS_PROFILE" \
+    --region $EKS_REGION > /tmp/elbs.json 2>/dev/null
 
   for lb in $(jq -r --arg vpc "$vpcId" '.LoadBalancerDescriptions[]? | select(.VPCId == $vpc) | .LoadBalancerName' /tmp/elbs.json); do
     echo "Delete Classic Load Balancer: $lb"
@@ -3243,4 +4289,235 @@ deleteHelmChart() {
   fi
 }
 
+# ------------------------------------------------------------------------------------------
+# Function Name ......: cleanupEksDeployment
+# Function Purpose ...: Delete EKS deployment and Capacity Reservation
+# ------------------------------------------------------------------------------------------
+cleanupEksDeployment() {
 
+  local reservation_state
+  local cluster_state
+  local result
+  local rc
+  local nodegroup
+
+  echo "Delete EKS Deployment"
+  echo " ▪ Cluster: $EKS_CLUSTER_NAME"
+  echo " ▪ Region: $EKS_REGION"
+
+  read -r -p "Type DELETE to confirm: " CONFIRM
+
+  if [ "$CONFIRM" != "DELETE" ]; then
+    echo " ▪ Cleanup cancelled"
+    return 1
+  fi
+
+  # ----------------------------------------------------------------------------------------
+  # Delete EKS Node Groups
+  # ----------------------------------------------------------------------------------------
+  for nodegroup in gpu-ondemand-ng faig-ng; do
+
+    echo " ▪ Delete Node Group ($nodegroup)"
+
+    result=$(aws eks describe-nodegroup \
+      --cluster-name "$EKS_CLUSTER_NAME" \
+      --nodegroup-name "$nodegroup" \
+      --region "$EKS_REGION" \
+      --profile "$AWS_PROFILE" \
+      --query 'nodegroup.status' \
+      --output text 2>&1)
+    rc=$?
+
+    if [ "$rc" -ne 0 ]; then
+      if [[ "$result" == *ResourceNotFoundException* ]]; then
+        continue
+      fi
+
+      echo "ERROR: $result"
+      return 1
+    fi
+
+    if ! eksctl delete nodegroup \
+      --cluster "$EKS_CLUSTER_NAME" \
+      --name "$nodegroup" \
+      --region "$EKS_REGION" \
+      --profile "$AWS_PROFILE" \
+      --disable-eviction \
+      --wait; then
+
+      echo "ERROR: Failed to delete Node Group ($nodegroup)"
+      return 1
+    fi
+
+    if ! aws eks wait nodegroup-deleted \
+      --cluster-name "$EKS_CLUSTER_NAME" \
+      --nodegroup-name "$nodegroup" \
+      --region "$EKS_REGION" \
+      --profile "$AWS_PROFILE"; then
+
+      echo "ERROR: Node Group deletion not confirmed ($nodegroup)"
+      return 1
+    fi
+
+  done
+
+  # ----------------------------------------------------------------------------------------
+  # Delete EKS Cluster
+  # ----------------------------------------------------------------------------------------
+  echo " ▪ Delete EKS Cluster ($EKS_CLUSTER_NAME)"
+
+  result=$(aws eks describe-cluster \
+    --name "$EKS_CLUSTER_NAME" \
+    --region "$EKS_REGION" \
+    --profile "$AWS_PROFILE" \
+    --query 'cluster.status' \
+    --output text 2>&1)
+  rc=$?
+
+  if [ "$rc" -ne 0 ]; then
+    if [[ "$result" != *ResourceNotFoundException* ]]; then
+      echo "ERROR: $result"
+      return 1
+    fi
+  else
+
+    if ! eksctl delete cluster \
+      --name "$EKS_CLUSTER_NAME" \
+      --region "$EKS_REGION" \
+      --profile "$AWS_PROFILE" \
+      --wait; then
+
+      echo "ERROR: Failed to delete EKS Cluster"
+      return 1
+    fi
+
+    if ! aws eks wait cluster-deleted \
+      --name "$EKS_CLUSTER_NAME" \
+      --region "$EKS_REGION" \
+      --profile "$AWS_PROFILE"; then
+
+      echo "ERROR: EKS Cluster deletion not confirmed"
+      return 1
+    fi
+  fi
+
+  # ----------------------------------------------------------------------------------------
+  # Delete Capacity Reservation
+  # ----------------------------------------------------------------------------------------
+  if [ -n "${reservation_id:-${RESERVATION_ID:-}}" ]; then
+
+    reservation_id="${reservation_id:-$RESERVATION_ID}"
+
+    echo " ▪ Cancel Capacity Reservation ($reservation_id)"
+
+    result=$(aws ec2 describe-capacity-reservations \
+      --capacity-reservation-ids "$reservation_id" \
+      --region "$EKS_REGION" \
+      --profile "$AWS_PROFILE" \
+      --query 'CapacityReservations[0].State' \
+      --output text 2>&1)
+    rc=$?
+
+    if [ "$rc" -ne 0 ]; then
+      if [[ "$result" != *InvalidCapacityReservationId.NotFound* ]]; then
+        echo "ERROR: $result"
+        return 1
+      fi
+
+    elif [ "$result" = "cancelled" ] || [ "$result" = "expired" ]; then
+      :
+
+    elif [ "$result" = "active" ] || [ "$result" = "pending" ]; then
+
+      if ! aws ec2 cancel-capacity-reservation \
+        --capacity-reservation-id "$reservation_id" \
+        --region "$EKS_REGION" \
+        --profile "$AWS_PROFILE" >/dev/null; then
+
+        echo "ERROR: Failed to cancel Capacity Reservation"
+        return 1
+      fi
+
+      local attempts=0
+
+      while true; do
+
+        result=$(aws ec2 describe-capacity-reservations \
+          --capacity-reservation-ids "$reservation_id" \
+          --region "$EKS_REGION" \
+          --profile "$AWS_PROFILE" \
+          --query 'CapacityReservations[0].State' \
+          --output text 2>&1)
+        rc=$?
+
+        if [ "$rc" -ne 0 ]; then
+          if [[ "$result" == *InvalidCapacityReservationId.NotFound* ]]; then
+            break
+          fi
+
+          echo "ERROR: $result"
+          return 1
+        fi
+
+        if [ "$result" = "cancelled" ] || [ "$result" = "expired" ]; then
+          break
+        fi
+
+        attempts=$((attempts + 1))
+
+        if [ "$attempts" -ge 60 ]; then
+          echo "ERROR: Capacity Reservation cancellation timed out"
+          return 1
+        fi
+
+        sleep 5
+      done
+
+    else
+      echo "ERROR: Unexpected Capacity Reservation state: $result"
+      return 1
+    fi
+
+  else
+    echo " ▪ No Capacity Reservation ID configured"
+  fi
+
+  echo " ▪ Remote Deployment Status file ($HOME/.faig/deploy.stat)"
+  rm -f  $HOME/.faig/deploy.stat 
+
+  echo " ▪ EKS Deployment cleanup completed successfully"
+
+  return 0
+}
+
+# ------------------------------------------------------------------------------------------
+# Function Name ......: checkEksNetworking
+# Function Purpose ...: Check existing EKS networking and select the GPU reservation AZ
+# ------------------------------------------------------------------------------------------
+# Argument ($1) ......: EKS_REGION
+# Argument ($2) ......: EKS_AZ
+# Return Value .......: 0 on success, 1 on failure
+# ------------------------------------------------------------------------------------------
+checkEksNetworking() {
+  local eks_region=$1
+  local eks_az=$2
+  local cluster_status
+
+  cluster_status=$(aws eks describe-cluster \
+    --name "$EKS_CLUSTER_NAME" \
+    --region "$eks_region" \
+    --profile "$AWS_PROFILE" \
+    --query 'cluster.status' \
+    --output text 2>/dev/null)
+
+  if [ "$cluster_status" = "ACTIVE" ]; then
+    echo " ▪ Existing EKS cluster found in $eks_region"
+    echo " ▪ Existing cluster networking must be checked before adding GPU nodes"
+    return 1
+  fi
+
+  echo " ▪ New EKS cluster: eksctl will create VPC and subnets"
+  echo " ▪ GPU reservation availability zone: $eks_az"
+
+  return 0
+}
